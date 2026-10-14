@@ -10,6 +10,10 @@
 
 以上是源码快照在此前验证环境中的结果，不代表本公开仓库已发布安装包、镜像或已完成独立CI。公开仓库的实际运行记录查看 [Actions](https://github.com/YS1109/harness-server-public/actions)。
 
+## 公开仓库独立验证
+
+首次 [main CI](https://github.com/YS1109/harness-server-public/actions/runs/38537650773) 已通过Rust格式、Clippy、测试，Windows客户端编译与身份初始化，以及Docker健康、非root、持久卷和重启检查。客户端与双架构镜像发布使用各自工作流验证，结果以本仓库Actions为准，不沿用旧仓库发布结论。
+
 ## 复核命令
 
 ```sh

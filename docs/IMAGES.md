@@ -1,6 +1,6 @@
 # GitHub 构建与 GHCR 镜像
 
-工作流 [Publish image](../.github/workflows/publish-image.yml) 使用 GitHub Actions 构建，发布到 `ghcr.io/ys1109/harness-server-public`。支持 `linux/amd64` 与 `linux/arm64`，包含服务端、Rust CLI和在线备份工具`harness-backup`。本仓库的镜像尚待首次发布，实际状态以本仓库Actions和包目录为准；源码快照的验证范围见 [验证记录](VALIDATION.md)。
+工作流 [Publish image](../.github/workflows/publish-image.yml) 使用 GitHub Actions 构建，发布到 `ghcr.io/ys1109/harness-server-public`。支持 `linux/amd64` 与 `linux/arm64`，包含服务端、Rust CLI和在线备份工具`harness-backup`。实际发布状态以本仓库Actions和包目录为准；源码快照的验证范围见 [验证记录](VALIDATION.md)。
 
 ## 发布
 

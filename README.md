@@ -1,6 +1,6 @@
 # Harness Server
 
-Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.3.2**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；本仓库尚未发布安装包或镜像。
+Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.3.2**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
 
 服务集中存储 Markdown，客户端通过 HTTP 路由记忆、维护 Session/Workstream 和提交结果。本版使用 Rust 引擎，不执行原 agent-home Python 引擎。**v1 是有限协议，不承诺兼容旧 Python 的全部 flags、字段或行为。**
 

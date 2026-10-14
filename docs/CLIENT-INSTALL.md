@@ -4,7 +4,7 @@
 
 ## 选择安装包
 
-从 [GitHub Releases](https://github.com/YS1109/harness-server-public/releases) 下载相同版本的安装包和 `SHA256SUMS`。本仓库公开Release可直接下载。初始公开快照尚未发布安装包；在发布前可按README从源码构建客户端。
+从 [GitHub Releases](https://github.com/YS1109/harness-server-public/releases) 下载相同版本的安装包和 `SHA256SUMS`。本仓库公开Release可直接下载。选择与系统和架构匹配的安装包；需要源码构建时按README操作。
 
 | 系统 | 包名后缀 | 环境要求 |
 | --- | --- | --- |
