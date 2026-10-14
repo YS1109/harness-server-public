@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Harness backup at 03:00 Asia/Shanghai
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=5m
+Unit=harness-backup.service
+
+[Install]
+WantedBy=timers.target

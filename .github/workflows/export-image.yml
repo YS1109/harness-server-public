@@ -1,0 +1,44 @@
+name: Export published image
+
+on:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: Published manifest digest (sha256)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Export existing amd64 image (no build or publication)
+        env:
+          DIGEST: ${{ inputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker pull --platform linux/amd64 "$image@$DIGEST"
+          docker tag "$image@$DIGEST" "$image:deployment-export"
+          mkdir export
+          docker image inspect "$image:deployment-export" --format '{{.Id}}' > export/IMAGE_ID
+          printf '%s@%s\n' "$image" "$DIGEST" > export/SOURCE
+          docker save "$image:deployment-export" | gzip -1 > export/harness-image.tar.gz
+          (cd export && sha256sum harness-image.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-image-linux-amd64
+          path: export/
+          if-no-files-found: error
+          retention-days: 1

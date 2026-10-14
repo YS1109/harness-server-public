@@ -1,0 +1,26 @@
+services:
+  harness-server:
+    image: harness-server:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["--data-dir", "/data", "serve", "--bind", "0.0.0.0:8080"]
+    environment:
+      HARNESS_TOKEN: "${HARNESS_TOKEN:?Set HARNESS_TOKEN in .env to at least 32 characters}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - harness_data:/data
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  harness_data:

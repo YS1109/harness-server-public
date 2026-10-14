@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Harness · 空间管理</title>
+  <link rel="stylesheet" href="/admin/console.css">
+  <script src="/admin/console.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主内容</a>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">H</span><span>Harness <small>管理控制台</small></span></div>
+    <div class="top-actions"><span id="connection" class="connection">未连接</span><button id="refresh" type="button" hidden>刷新</button><button id="logout" type="button" hidden>退出</button></div>
+  </header>
+
+  <section id="login-view" class="login-view" aria-labelledby="login-title">
+    <form id="login-form" class="login-card" autocomplete="off">
+      <span class="eyebrow">HARNESS CONSOLE</span>
+      <h1 id="login-title">让每个 Agent 各有所属</h1>
+      <p class="muted">统一查看知识空间，管理访问权限与默认空间。</p>
+      <label for="admin-token">管理员令牌</label>
+      <input id="admin-token" name="admin-token" type="password" required autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="输入管理员 Bearer token">
+      <button id="login-submit" class="primary" type="submit">连接控制台</button>
+      <p class="hint">令牌仅保留在当前页面内存中，刷新或退出后需重新输入。</p>
+      <p id="login-error" class="error-text" role="alert"></p>
+    </form>
+  </section>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar" aria-label="空间导航">
+      <div class="sidebar-heading"><span>知识空间</span><button id="create-namespace" class="icon-button" type="button" aria-label="新建空间" title="新建空间">＋</button></div>
+      <label class="sr-only" for="namespace-search">搜索空间</label>
+      <input id="namespace-search" type="search" placeholder="搜索名称或 ID" autocomplete="off">
+      <nav id="namespace-list" class="namespace-list" aria-label="Namespace 列表"></nav>
+      <div class="sidebar-footer"><button id="global-agents" class="global-nav" type="button">Agent 管理 <span>全局</span></button><p>Markdown 为知识源<br>归档保留所有内容</p></div>
+    </aside>
+
+    <main id="main" class="main" tabindex="-1">
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <div id="pending-banner" class="pending-banner" role="alert" hidden>
+        <div><strong>写入结果尚未确认</strong><p id="pending-description"></p><p>重试将复用首次幂等键和完整请求。确认结果前，其他写操作已暂停。</p></div>
+        <div class="button-row"><button id="retry-mutation" class="primary" type="button">重试原请求</button><button id="abandon-mutation" type="button">放弃重试</button></div>
+      </div>
+      <section id="namespace-view" hidden>
+        <div class="page-heading"><div><div class="eyebrow">NAMESPACE</div><h1 id="namespace-title"></h1><p id="namespace-description" class="muted"></p><div class="heading-meta"><code id="namespace-id"></code><span id="namespace-status" class="badge"></span></div></div><button id="edit-namespace" type="button">编辑空间</button></div>
+        <div id="counts" class="counts" aria-label="文档数量"></div>
+        <div class="tabs" role="tablist" aria-label="空间管理">
+          <button id="tab-content" type="button" role="tab" aria-selected="true" aria-controls="panel-content" tabindex="0" data-tab="content">内容</button>
+          <button id="tab-members" type="button" role="tab" aria-selected="false" aria-controls="panel-members" tabindex="-1" data-tab="members">成员权限</button>
+          <button id="tab-audit" type="button" role="tab" aria-selected="false" aria-controls="panel-audit" tabindex="-1" data-tab="audit">操作记录</button>
+        </div>
+        <section id="panel-content" class="tab-panel" role="tabpanel" aria-labelledby="tab-content">
+          <form id="filters" class="filters"><div><label for="kind-filter">文档类型</label><select id="kind-filter"><option value="">全部类型</option><option value="project">项目</option><option value="project_topic">项目专题</option><option value="process">流程</option><option value="session">Session</option><option value="workstream">Workstream</option><option value="log">日志</option></select></div><div><label for="project-filter">项目 ID</label><input id="project-filter" type="text" placeholder="全部项目" autocomplete="off"></div><button type="submit">查询</button></form>
+          <div id="documents-state" class="hint" role="status" aria-live="polite"></div>
+          <div class="table-wrap"><table><caption class="sr-only">空间文档</caption><thead><tr><th scope="col">文档</th><th scope="col">类型</th><th scope="col">项目 / 状态</th><th scope="col">更新时间</th></tr></thead><tbody id="documents-body"></tbody></table></div>
+          <div class="pagination"><span id="page-label"></span><div class="button-row"><button id="previous-page" type="button">上一页</button><button id="next-page" type="button">下一页</button></div></div>
+        </section>
+        <section id="panel-members" class="tab-panel" role="tabpanel" aria-labelledby="tab-members" hidden><div class="section-heading"><h2>空间成员</h2><p class="muted">权限由 Agent 的空间授权决定，可在下方打开 Agent 编辑。</p></div><div class="table-wrap"><table><caption class="sr-only">空间成员权限</caption><thead><tr><th scope="col">Agent</th><th scope="col">读取</th><th scope="col">写入</th><th scope="col">管理</th></tr></thead><tbody id="members-body"></tbody></table></div></section>
+        <section id="panel-audit" class="tab-panel" role="tabpanel" aria-labelledby="tab-audit" hidden><div class="section-heading"><h2>操作记录</h2><p class="muted">展示服务返回的最近管理记录，当前空间相关记录优先。</p></div><div id="audit-table"></div></section>
+      </section>
+      <section id="agents-view" hidden><div class="page-heading"><div><span class="eyebrow">GLOBAL ACCESS</span><h1>Agent 管理</h1><p class="muted">集中配置空间权限与默认读写范围。</p></div><span id="agent-count" class="badge"></span></div><div class="info-box">Agent 凭据由部署配置注册。这里仅管理已有、已绑定凭据的 Agent；新增身份请更新服务部署配置。</div><div id="agents-list" class="agent-grid"></div><details class="limits"><summary>服务限制</summary><pre id="limits-text"></pre></details></section>
+      <div id="empty-view" class="empty-state" hidden><h2>暂无知识空间</h2><p>新建一个空间，或进入 Agent 管理查看已注册身份。</p></div>
+    </main>
+  </div>
+
+  <dialog id="namespace-dialog" aria-labelledby="namespace-dialog-title"><form id="namespace-form"><div class="dialog-heading"><h2 id="namespace-dialog-title">新建空间</h2><button class="icon-button" type="button" data-close="namespace-dialog" aria-label="关闭">×</button></div><p id="namespace-form-note" class="muted"></p><label for="namespace-name">空间名称</label><input id="namespace-name" type="text" required maxlength="80" autocomplete="off"><label for="namespace-description-input">描述</label><textarea id="namespace-description-input" rows="3" maxlength="400"></textarea><div id="namespace-status-field"><label for="namespace-status-input">状态</label><select id="namespace-status-input"><option value="ACTIVE">使用中</option><option value="ARCHIVED">已归档</option></select><p class="hint">归档可恢复，不删除文档。shared 公共空间不可归档。</p></div><p id="namespace-unsaved" class="unsaved" hidden>有未保存的修改</p><p id="namespace-form-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-close="namespace-dialog">取消</button><button id="namespace-save" type="submit" class="primary">创建空间</button></div></form></dialog>
+
+  <dialog id="agent-dialog" class="wide-dialog" aria-labelledby="agent-dialog-title"><form id="agent-form"><div class="dialog-heading"><div><span class="eyebrow">AGENT ACCESS</span><h2 id="agent-dialog-title">编辑 Agent</h2></div><button class="icon-button" type="button" data-close="agent-dialog" aria-label="关闭">×</button></div><p id="agent-identity" class="muted"></p><label for="agent-name">显示名称</label><input id="agent-name" type="text" required maxlength="80" autocomplete="off"><fieldset><legend>空间授权</legend><p class="hint">可授权多个空间；默认读取必须属于读取授权，默认写入必须属于写入授权。</p><div class="table-wrap"><table><caption class="sr-only">Agent 空间授权</caption><thead><tr><th scope="col">空间</th><th scope="col">读取</th><th scope="col">写入</th><th scope="col">默认读取</th></tr></thead><tbody id="agent-grants"></tbody></table></div></fieldset><label for="agent-default-write">默认写入空间</label><select id="agent-default-write"></select><p id="agent-unsaved" class="unsaved" hidden>有未保存的修改</p><p id="agent-form-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-close="agent-dialog">取消</button><button id="agent-save" type="submit" class="primary">保存权限</button></div></form></dialog>
+
+  <dialog id="preview-dialog" class="preview-dialog" aria-labelledby="preview-title"><div class="dialog-heading"><h2 id="preview-title">文档预览</h2><button class="icon-button" type="button" data-close="preview-dialog" aria-label="关闭预览">×</button></div><p id="preview-path" class="mono muted"></p><p id="preview-sha" class="mono hint"></p><p class="hint">只读 Markdown 原文</p><pre id="preview-content" tabindex="0"></pre></dialog>
+</body>
+</html>

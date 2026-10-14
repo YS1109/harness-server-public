@@ -1,0 +1,168 @@
+name: Publish image
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      metadata: ${{ steps.meta.outputs.json }}
+      labels: ${{ steps.meta.outputs.labels }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version and image name
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+            if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+              echo '::error::Version tag must match Cargo.toml package.version'
+              exit 1
+            fi
+          fi
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')) }}
+
+  build:
+    needs: [checks, prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push native image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=harness-image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=harness-image-${{ matrix.arch }}
+      - name: Smoke test on native runner
+        env:
+          IMAGE_NAME: ${{ needs.prepare.outputs.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HARNESS_TOKEN="$(openssl rand -hex 32)"
+          echo "::add-mask::$HARNESS_TOKEN"
+          trap 'docker rm -f harness-native >/dev/null 2>&1 || true; docker volume rm harness-native-data >/dev/null 2>&1 || true' EXIT
+          docker run -d --name harness-native --env HARNESS_TOKEN \
+            --publish 127.0.0.1:18080:8080 --read-only --tmpfs /tmp \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            --mount type=volume,source=harness-native-data,target=/data "$IMAGE_NAME@$IMAGE_DIGEST"
+          curl --fail --silent --show-error --retry 20 --retry-connrefused \
+            --retry-delay 1 --max-time 2 http://127.0.0.1:18080/healthz
+          docker exec harness-native harness --url http://127.0.0.1:8080 health
+          docker exec harness-native harness-backup --version
+          test "$(docker exec harness-native id -u)" = 10001
+          curl --fail --silent --show-error http://127.0.0.1:18080/v1/executions \
+            -H "Authorization: Bearer $HARNESS_TOKEN" -H 'Idempotency-Key: native-execution' \
+            -H 'Content-Type: application/json' \
+            --data '{"task_id":"native-smoke","conversation_id":"ci","source_key":"ci-native-message","project":"demo","title":"Native execution","goal":"Verify execution API"}' \
+            | jq -e '.task.status == "QUEUED"'
+      - name: Export digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${IMAGE_DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate platforms and publish combined tags
+        env:
+          IMAGE_NAME: ${{ needs.prepare.outputs.image }}
+          METADATA_JSON: ${{ needs.prepare.outputs.metadata }}
+        shell: bash
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digests=(*)
+          [[ "${#digests[@]}" -eq 2 ]]
+          sources=()
+          for digest in "${digests[@]}"; do
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            sources+=("$IMAGE_NAME@sha256:$digest")
+          done
+          docker buildx imagetools create --dry-run "${sources[@]}" > "$RUNNER_TEMP/manifest.json"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' "$RUNNER_TEMP/manifest.json"
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          [[ "${#tags[@]}" -gt 0 ]]
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${tags[0]}" --format '{{json .Manifest}}' > "$RUNNER_TEMP/published.json"
+          digest="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/published.json")"
+          docker buildx imagetools inspect "$IMAGE_NAME@$digest" --raw > "$RUNNER_TEMP/published-manifest.json"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' "$RUNNER_TEMP/published-manifest.json"
+          printf 'Published native multiarch image: `%s@%s`\n' "$IMAGE_NAME" "$digest" >> "$GITHUB_STEP_SUMMARY"

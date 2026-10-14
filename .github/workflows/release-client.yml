@@ -1,0 +1,166 @@
+name: Release client
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-client-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test packaging guards
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+      - name: Check version tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo '::error::Version tag must match Cargo.toml package.version'
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            rustflags: ""
+          - platform: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            rustflags: ""
+          - platform: linux-arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            rustflags: ""
+          - platform: linux-x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rustflags: ""
+          - platform: windows-x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            rustflags: "-C target-feature=+crt-static"
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-client-${{ matrix.target }}
+      - name: Build native client
+        run: cargo build --release --locked --bin harness --target ${{ matrix.target }}
+      - name: Package and smoke test extracted client
+        run: python tools/package_client.py package --target ${{ matrix.target }} --platform ${{ matrix.platform }} --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  collect:
+    needs: [prepare, checks, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: client-*
+          path: dist
+          merge-multiple: true
+      - name: Verify complete asset set and checksums
+        run: python tools/package_client.py finalize --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-client-${{ needs.prepare.outputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, collect]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-client-${{ needs.prepare.outputs.version }}
+          path: dist
+      - name: Upload to draft, verify assets, then publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Never replace assets of an already published version.
+          if gh release view "$GITHUB_REF_NAME" --json isDraft > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release-error.txt"; then
+            jq -e '.isDraft == true' "$RUNNER_TEMP/release.json"
+          else
+            # Authentication/network errors must not be treated as a missing release.
+            gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name' > "$RUNNER_TEMP/release-tags.txt"
+            if grep -Fxq "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-tags.txt"; then
+              cat "$RUNNER_TEMP/release-error.txt" >&2
+              exit 1
+            fi
+            cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          Prebuilt `harness` HTTP clients for macOS (Apple Silicon / Intel), Linux (ARM64 / x64) and Windows (x64). No Rust installation required.
+
+          Extract the archive for your OS and architecture, verify it against `SHA256SUMS`, then follow the bundled `INSTALL.md`. Configure your service URL and inject the service's token before running `harness health`.
+
+          Linux requires glibc 2.35 or newer; macOS deployment target is 11.0 (tested on the build runners); Windows is built with the static MSVC runtime and tested on Windows Server 2022. macOS packages are not Developer ID signed or notarized. These packages contain the client only; deploy the service separately using the GHCR image.
+          NOTES
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Harness $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release view "$GITHUB_REF_NAME" --json assets > "$RUNNER_TEMP/assets.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          expected = {p.name: p.stat().st_size for p in Path('dist').iterdir()}
+          actual = {a['name']: a['size'] for a in json.loads((Path(os.environ['RUNNER_TEMP']) / 'assets.json').read_text())['assets']}
+          if actual != expected:
+              raise SystemExit('Release asset set/size mismatch; keeping draft unpublished')
+          PY
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease="${{ contains(github.ref_name, '-') }}"
+          printf 'Client release: https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"

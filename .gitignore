@@ -1,0 +1,14 @@
+/target/
+/data/
+/backups/
+/backup.json
+/ossutil.credentials
+*.tar.gz
+.env
+*.local.json
+*.log
+.DS_Store
+dist/
+__pycache__/
+
+/config/

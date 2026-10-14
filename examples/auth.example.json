@@ -1,0 +1,16 @@
+{
+  "principals": [
+    {
+      "agent_id": "codex-example",
+      "token_env": "HARNESS_CODEX_TOKEN",
+      "read_namespaces": [],
+      "write_namespaces": []
+    },
+    {
+      "agent_id": "pi-qq-main",
+      "token_env": "HARNESS_QQ_TOKEN",
+      "read_namespaces": [],
+      "write_namespaces": []
+    }
+  ]
+}

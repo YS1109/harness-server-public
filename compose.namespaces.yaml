@@ -1,0 +1,12 @@
+# Optional override, used with compose.image.yaml or compose.yaml.
+# Copy examples/auth.example.json to ./config/auth.json and provision distinct
+# credential environment variables in the deployment's private .env.
+services:
+  harness-server:
+    environment:
+      HARNESS_ADMIN_TOKEN: "${HARNESS_ADMIN_TOKEN:?Set an independent administrator credential}"
+      HARNESS_AUTH_CONFIG: /etc/harness/auth.json
+      HARNESS_CODEX_TOKEN: "${HARNESS_CODEX_TOKEN:?Set an independent Codex credential}"
+      HARNESS_QQ_TOKEN: "${HARNESS_QQ_TOKEN:?Set an independent QQ agent credential}"
+    volumes:
+      - ./config/auth.json:/etc/harness/auth.json:ro

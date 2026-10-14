@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "data_dir": "/var/lib/harness-server",
+  "output_dir": "/var/backups/harness-server",
+  "oss": {
+    "enabled": false,
+    "bucket": "replace-with-your-private-bucket",
+    "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
+    "prefix": "harness/backups",
+    "ossutil": "/usr/local/bin/ossutil",
+    "credentials_file": "/etc/harness-server/ossutil.credentials"
+  }
+}

@@ -1,0 +1,14 @@
+[Unit]
+Description=Online Harness backup and optional OSS upload
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/local/bin/harness-backup --config /etc/harness-server/backup.json create
+TimeoutStartSec=2h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

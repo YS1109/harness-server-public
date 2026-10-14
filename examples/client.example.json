@@ -1,0 +1,8 @@
+{
+  "url": "http://localhost:8080",
+  "agent_id": null,
+  "namespace": null,
+  "read_namespaces": null,
+  "token_env": "HARNESS_TOKEN",
+  "projects": {}
+}
