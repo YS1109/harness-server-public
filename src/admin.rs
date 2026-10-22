@@ -259,6 +259,7 @@ async fn runtime(State(app): State<App>, Query(q): Query<RuntimeQuery>) -> Resul
             }
         }
         r["version"] = json!(env!("CARGO_PKG_VERSION"));
+        r["build"] = crate::build_info::metadata();
         r["uptime_seconds"] = json!(app.metrics.started.elapsed().as_secs());
         r["routing_evaluation"] = crate::routing_eval::latest(&root, q.namespace.as_deref());
         r["storage"] = storage;

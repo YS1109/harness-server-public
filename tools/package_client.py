@@ -76,6 +76,11 @@ def smoke(binary, ver):
             raise ValueError("reading packaged rules changed configuration")
         if "harness instructions" not in run(["rules", "--bootstrap"]):
             raise ValueError("packaged bootstrap missing")
+        build = json.loads(run(["doctor"])).get("build", {})
+        if not build.get("built_at") or not build.get("target"):
+            raise ValueError("packaged build provenance missing")
+        if env.get("GITHUB_SHA") and build.get("commit") != env["GITHUB_SHA"]:
+            raise ValueError("packaged build commit mismatch")
         token = uuid.uuid4().hex
         env["HARNESS_TOKEN"] = token
 

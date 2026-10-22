@@ -50,6 +50,8 @@ harness eval-routing --suite /path/to/routing-suite.json --json
 
 该夹具通过不等于真实记忆通过。用于真实服务前应审阅、修改项目/依赖/预期并提升version；项目或预期/依赖的ACTIVE专题不存在时明确为不可评估，不自动导入模拟记忆、不计为成功。
 
+[真实结构示例](../examples/routing-suite-live.json)改用实际Agent Home专题结构，覆盖client-rules、namespace、cost-and-evaluation，以及与shared-http-service的竞争、无关及否定表达。它不包含记忆正文，也不自动建项目。先核对这些依赖并冻结预期，再执行；保留失败，不通过修改预期美化结果。私人业务场景的查询与用例文件应留在忽略的本地目录，只公开脱敏汇总。2026-10-23的真实挑战结果与限制见[验证记录](VALIDATION.md)。
+
 ## 评分与边界
 
 | 指标 | 口径 |

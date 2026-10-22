@@ -1,12 +1,14 @@
 # Harness Server
 
-Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.4.0（开发版）**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
+Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.4.1**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
 
 服务集中存储 Markdown，客户端通过 HTTP 路由记忆、维护 Session/Workstream 和提交结果。本版使用 Rust 引擎，不执行原 agent-home Python 引擎。**v1 是有限协议，不承诺兼容旧 Python 的全部 flags、字段或行为。**
 
 QQ 机器人 / Pi 主 Agent 可通过独立执行记录API持久化调度摘要、任务/尝试状态和执行中检查点，支持来源消息去重、条件领取、重启读取及独立的结果回复状态。把 [Pi执行记录接入指南](docs/PI-EXECUTION-INTEGRATION.md) 交给机器人代码的Agent集成；设计与后续边界见 [执行记录设计](docs/EXECUTION-RECORDS.md)。服务不执行任务或自动重派，真实QQ/Pi接入尚未验证。
 
 ## v0.4 易用性与运行工作台
+
+v0.4.1减少保存校验中的重复解析，仍完整检查文档与关联；统计新增固定校验类别、route/start专题选择分布和get返回字符数，旧数据不补算。doctor、鉴权health与管理概览显示构建提交、工作区状态、时间和目标平台；发布流程校验产物提交指纹。内置规则缩短约20%字符，默认调用预算与保存安全约束不变。实测边界见[验证记录](docs/VALIDATION.md)。
 
 本版源码提供 `harness setup`、`doctor`、`bind`；`connect/setup` 确认新服务后启用单请求写入，旧配置继续使用v1预检。结果可从stdin提交，finish自动进行本地格式校验；`--timings`输出实际HTTP请求数及CLI进程内耗时。普通小任务继续零调用，连续任务不按每次回复重复开始和收尾。
 

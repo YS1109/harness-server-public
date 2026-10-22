@@ -409,6 +409,23 @@ async fn execute(
         if !result.as_ref().is_ok_and(|v| v["mode"] == "SKIP") {
             let response = result.as_ref().ok();
             let count = |field: &str| response.and_then(|v| v[field].as_u64().or_else(|| v["memories"][field].as_u64()));
+            let returned_characters = if command == "get" {
+                response
+                    .and_then(|v| v["content"].as_str())
+                    .map(|s| s.chars().count() as u64)
+            } else {
+                count("returned_characters")
+            };
+            let route_result = matches!(command, "route" | "start").then(|| {
+                response.map_or(
+                    crate::metrics::RouteResult::Unknown,
+                    |v| crate::metrics::RouteResult::from_response(if command == "start" {
+                        &v["memories"]
+                    } else {
+                        v
+                    }),
+                )
+            });
             app.metrics.record(&crate::metrics::Event {
                 protocol:Some(access.protocol.clone()), execution_group_id:response.and_then(|v|v["execution_group_id"].as_str()).or_else(||value["execution_group_id"].as_str()).filter(|id|crate::document::slug(id).is_ok()).map(str::to_owned),
                 lock_wait_ms, operation_ms, commit_ms,
@@ -418,7 +435,10 @@ async fn execute(
                 handler_ms:start.elapsed().as_secs_f64()*1000.0, success:result.is_ok(),
                 retry:response.is_some_and(|v|v["idempotent"]==true),
                 error_code:result.as_ref().err().map(|e|e.code().to_owned()),
-                returned_characters:count("returned_characters"),handoff_characters:count("handoff_characters"),
+                validation_reason: result.as_ref().err().and_then(Error::validation_reason),
+                route_result,
+                returned_characters,
+                handoff_characters:count("handoff_characters"),
             });
         }
         result.map(Json)
@@ -503,7 +523,7 @@ async fn health(
         registry::ensure(&store.state.documents,&access,false)?;
         let docs=namespace::view(&store.state.documents,&access.namespace,access.inherit_shared);
         validate_all(&docs)?;
-        Ok(Json(json!({"registry_version":1,"write_protocols":["v1","scoped-v2"],"version":env!("CARGO_PKG_VERSION"),"status":"healthy","revision":if access.namespace=="shared" {store.revision.clone()} else {None},"documents":docs.len(),"identity":{"agent_id":access.agent_id,"namespace":access.namespace},"check_scope":"当前namespace及获准继承的共享记忆；结构、身份与引用，不检查外部链接"})))
+        Ok(Json(json!({"registry_version":1,"write_protocols":["v1","scoped-v2"],"version":env!("CARGO_PKG_VERSION"),"build":crate::build_info::metadata(),"status":"healthy","revision":if access.namespace=="shared" {store.revision.clone()} else {None},"documents":docs.len(),"identity":{"agent_id":access.agent_id,"namespace":access.namespace},"check_scope":"当前namespace及获准继承的共享记忆；结构、身份与引用，不检查外部链接"})))
     }).await.map_err(|_|invalid("健康检查失败"))?
 }
 #[derive(Default, Deserialize)]

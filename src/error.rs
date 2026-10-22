@@ -1,5 +1,18 @@
 use thiserror::Error;
 
+/// Fixed, content-free diagnostics; independent of the public HTTP error code.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationReason {
+    FieldFormat,
+    BodyBudget,
+    OtherValidation,
+    #[serde(other)]
+    Unclassified,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0}")]
@@ -35,6 +48,15 @@ pub fn conflict(message: impl Into<String>) -> Error {
 }
 
 impl Error {
+    pub fn validation_reason(&self) -> Option<ValidationReason> {
+        match self {
+            Self::Field { .. } => Some(ValidationReason::FieldFormat),
+            Self::Budget { .. } => Some(ValidationReason::BodyBudget),
+            Self::Invalid(_) => Some(ValidationReason::OtherValidation),
+            _ => None,
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             Self::Forbidden(_) => "forbidden",

@@ -527,6 +527,8 @@
     const summary = element('div', undefined, 'runtime-meta');
     const uptime = typeof data.uptime_seconds === 'number' ? `${number(Math.floor(data.uptime_seconds / 3600))} 小时 ${Math.floor(data.uptime_seconds % 3600 / 60)} 分钟` : '未观测';
     summary.append(element('span', sampleLabel(data)), element('span', `版本 ${data.version ?? '未知'}`), element('span', `已运行 ${uptime}`), element('span', `统计窗口 ${number(data.window_days, ' 天')}`));
+    const build = data.build || {};
+    summary.append(element('span', `构建提交 ${build.commit ?? '未知'} · 工作区 ${typeof build.dirty === 'boolean' ? (build.dirty ? '含未提交修改' : '干净') : '未知'}`), element('span', `构建时间 ${dateLabel(build.built_at)} · 目标 ${build.target ?? '未知'}`));
     content.append(summary, element('h2', '调用与耗时'));
     const calls = element('div', undefined, 'metric-grid');
     [
@@ -545,13 +547,15 @@
     ].forEach((args) => resources.append(metricCard(...args)));
     content.append(resources, element('p', `当前修订：${storage.revision ?? '未观测'}。${data.storage_scope || '存储容量为全局，空间筛选仅影响调用统计'}。存储不随统计窗口变化。`, 'hint revision-note'));
     const breakdowns = element('div', undefined, 'runtime-breakdowns');
-    for (const [label, key, name] of [['命令分布', 'commands', '命令'], ['错误分布', 'error_codes', '错误码']]) {
+    const diagnosticLabels = { field_format: '字段格式', body_budget: '正文预算', other_validation: '其他校验', unclassified: '未分类（含历史）', auto: '已选择专题（含显式指定）', candidates: '仅候选摘要', none: '无专题或候选', unknown: '未观测/失败（含历史）' };
+    for (const [label, key, name] of [['命令分布', 'commands', '命令'], ['错误分布', 'error_codes', '错误码'], ['校验失败分类', 'validation_reasons', '固定类别'], ['路由返回结果', 'route_results', '结果']]) {
       const section = element('section'); section.append(element('h2', label));
       const values = metrics[key] && typeof metrics[key] === 'object' ? Object.entries(metrics[key]) : [];
-      section.append(simpleTable(label, [name, '次数'], values.sort((a, b) => (b[1] || 0) - (a[1] || 0)).map(([key, value]) => [key, number(value)])));
+      section.append(simpleTable(label, [name, '次数'], values.sort((a, b) => (b[1] || 0) - (a[1] || 0)).map(([key, value]) => [diagnosticLabels[key] || key, number(value)])));
       breakdowns.append(section);
     }
     content.append(breakdowns, element('h2', '各命令耗时'));
+    content.append(element('p', '分类只覆盖已采集的业务处理器错误；历史缺失字段不追溯猜测。路由分布只计 route/start，选中或返回候选不代表选对；get 返回字符从支持本字段的版本开始观测，字符不代表实际阅读量。', 'hint'));
     const commands = metrics.command_metrics || data.command_metrics || {};
     const pair = (values, key) => {
       const count = key === 'handler_ms' ? values?.observed_calls : values?.[`${key.replace(/_ms$/, '')}_observed_calls`];

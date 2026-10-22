@@ -73,6 +73,9 @@ fn finish_payload(id: &str, sha: &str) -> Value {
 #[tokio::test]
 async fn all_data_endpoints_are_authenticated_and_liveness_is_minimal() {
     let (_dir, app) = app();
+    let (status, health) = request(&app, "GET", "/v1/health", Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(health["build"], harness_server::build_info::metadata());
     for path in [
         "/v1/health",
         "/v1/stats",
@@ -103,6 +106,11 @@ async fn all_data_endpoints_are_authenticated_and_liveness_is_minimal() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 10000).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        json!({"status":"ok"})
+    );
 }
 #[tokio::test]
 async fn cas_identity_and_credential_guards_prevent_mutation() {

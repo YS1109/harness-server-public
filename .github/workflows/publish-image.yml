@@ -73,6 +73,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: |
+            HARNESS_BUILD_COMMIT=${{ github.sha }}
+            HARNESS_BUILD_DIRTY=false
           platforms: linux/${{ matrix.arch }}
           labels: ${{ needs.prepare.outputs.labels }}
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
@@ -94,7 +97,8 @@ jobs:
             --mount type=volume,source=harness-native-data,target=/data "$IMAGE_NAME@$IMAGE_DIGEST"
           curl --fail --silent --show-error --retry 20 --retry-connrefused \
             --retry-delay 1 --max-time 2 http://127.0.0.1:18080/healthz
-          docker exec harness-native harness --url http://127.0.0.1:8080 health
+          docker exec harness-native harness --url http://127.0.0.1:8080 health \
+            | jq -e --arg commit "$GITHUB_SHA" '.build.commit == $commit and .build.dirty == false'
           docker exec harness-native harness-backup --version
           test "$(docker exec harness-native id -u)" = 10001
           curl --fail --silent --show-error http://127.0.0.1:18080/v1/executions \

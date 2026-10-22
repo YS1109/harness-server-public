@@ -560,6 +560,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let token_env = cfg.token_env.as_deref().unwrap_or("HARNESS_TOKEN");
         let bindings:Vec<_>=cfg.projects.iter().map(|(id,path)|json!({"project":id,"root":path,"exists":path.is_dir(),"absolute":path.is_absolute()})).collect();
         let mut result = json!({"version":env!("CARGO_PKG_VERSION"),"config":config_path,"url":url,"url_source":if args.url.is_some(){"argument/environment"}else if cfg.url.is_some(){"config"}else{"default"},"token_env":token_env,"token_present":std::env::var(token_env).is_ok_and(|t|!t.is_empty()),"local_identity":{"agent_id":agent_id,"namespace":namespace,"read_namespaces":read_namespaces},"bindings":bindings,"project_match":project(None,&cfg).ok(),"project_match_error":project(None,&cfg).err().map(|e|e.to_string()),"write_protocol":args.write_protocol.as_deref().or(cfg.write_protocol.as_deref()).unwrap_or("v1"),"read_only":true});
+        result["build"] = harness_server::build_info::metadata();
         if let Ok(token) = std::env::var(token_env) {
             let mut builder = reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))

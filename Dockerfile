@@ -4,6 +4,7 @@ WORKDIR /build
 
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
 COPY src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -11,7 +12,11 @@ FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --locked --recipe-path recipe.json --bin harness-server --bin harness --bin harness-backup
 COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
 COPY src ./src
+ARG HARNESS_BUILD_COMMIT=unknown
+ARG HARNESS_BUILD_DIRTY=unknown
+ENV HARNESS_BUILD_COMMIT=$HARNESS_BUILD_COMMIT HARNESS_BUILD_DIRTY=$HARNESS_BUILD_DIRTY
 RUN cargo build --release --locked --bin harness-server --bin harness --bin harness-backup
 
 FROM debian:bookworm-slim AS runtime

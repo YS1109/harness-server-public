@@ -1,4 +1,5 @@
 //! Best-effort local telemetry. Never part of the knowledge transaction or backups.
+use crate::error::ValidationReason;
 use chrono::{DateTime, Duration, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,31 @@ use std::{
 };
 
 const MAX_DAY_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteResult {
+    /// A selected topic, including an explicit selection.
+    Auto,
+    Candidates,
+    None,
+    #[serde(other)]
+    Unknown,
+}
+impl RouteResult {
+    pub fn from_response(response: &Value) -> Self {
+        match (
+            response["project_topics"].as_array(),
+            response["topic_candidates"].as_array(),
+        ) {
+            (Some(selected), Some(_)) if !selected.is_empty() => Self::Auto,
+            (Some(_), Some(candidates)) if !candidates.is_empty() => Self::Candidates,
+            (Some(_), Some(_)) => Self::None,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Event {
     #[serde(default)]
@@ -40,6 +66,11 @@ pub struct Event {
     pub success: bool,
     pub retry: bool,
     pub error_code: Option<String>,
+    #[serde(default)]
+    pub validation_reason: Option<ValidationReason>,
+    #[serde(default)]
+    pub route_result: Option<RouteResult>,
+    /// Unicode scalar values in returned content, not tokens or observed reading.
     pub returned_characters: Option<u64>,
     pub handoff_characters: Option<u64>,
 }
@@ -57,6 +88,8 @@ pub struct Summary {
     pub handoff_character_observed_calls: u64,
     pub commands: BTreeMap<String, u64>,
     pub error_codes: BTreeMap<String, u64>,
+    pub validation_reasons: BTreeMap<ValidationReason, u64>,
+    pub route_results: BTreeMap<RouteResult, u64>,
     pub service_versions: BTreeMap<String, u64>,
     pub protocols: BTreeMap<String, u64>,
     pub grouped_calls: u64,
@@ -116,6 +149,25 @@ impl Summary {
             .or_default() += 1;
         if let Some(code) = &e.error_code {
             *self.error_codes.entry(code.clone()).or_default() += 1;
+        }
+        if !e.success && e.error_code.as_deref() == Some("validation") {
+            *self
+                .validation_reasons
+                .entry(
+                    e.validation_reason
+                        .unwrap_or(ValidationReason::Unclassified),
+                )
+                .or_default() += 1;
+        }
+        if matches!(e.command.as_str(), "route" | "start") {
+            *self
+                .route_results
+                .entry(if e.success {
+                    e.route_result.unwrap_or(RouteResult::Unknown)
+                } else {
+                    RouteResult::Unknown
+                })
+                .or_default() += 1;
         }
         if let Some(n) = e.returned_characters {
             *self.returned_characters.get_or_insert(0) += n;
@@ -365,6 +417,8 @@ mod tests {
             success: true,
             retry: false,
             error_code: None,
+            validation_reason: None,
+            route_result: None,
             returned_characters: None,
             handoff_characters: None,
         }

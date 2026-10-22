@@ -528,7 +528,7 @@ fn revision_growth_baseline() {
         let after = store.usage().unwrap();
         println!(
             "{}",
-            json!({"documents":n,"samples":3,"transaction_ms_p50":times[1],"disk_before":before["disk_bytes"],"disk_after":after["disk_bytes"],"receipts":after["receipts"],"scope":"local debug full snapshots with synthetic documents; not production/task latency"})
+            json!({"documents":n,"samples":3,"transaction_ms_p50":times[1],"disk_before":before["disk_bytes"],"disk_after":after["disk_bytes"],"receipts":after["receipts"],"profile":if cfg!(debug_assertions){"debug"}else{"release"},"scope":"local full snapshots with synthetic documents; not production/task latency"})
         );
     }
 }

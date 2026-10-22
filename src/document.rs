@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, sync::LazyLock};
 pub type Documents = BTreeMap<String, String>;
 pub type Metadata = Map<String, Value>;
 static SLUG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,127}$").unwrap());
+static MONTH_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}\.md$").unwrap());
 static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(\bsk-[a-z0-9_-]{20,}|\bAKIA[A-Z0-9]{16}\b|\bgh[pousr]_[a-z0-9]{20,}|\bxox[baprs]-[a-z0-9-]{20,}|\beyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|authorization\s*:\s*bearer\s+[a-z0-9._~+/-]{12,})").unwrap()
 });
@@ -37,16 +38,12 @@ pub fn path_kind(path: &str) -> Result<&'static str> {
     let kind = match parts.as_slice() {
         ["control", "namespaces", _] => "control_namespace",
         ["control", "agents", _] => "control_agent",
-        ["control", "audit", file] if Regex::new(r"^\d{4}-\d{2}\.md$").unwrap().is_match(file) => {
-            "control_audit"
-        }
+        ["control", "audit", file] if MONTH_FILE.is_match(file) => "control_audit",
         ["memory", "project", _] => "project",
         ["memory", "project", _, _] => "project_topic",
         ["memory", "process", _] => "process",
         ["memory", "templates", _] => "template",
-        ["memory", "logs", file] if Regex::new(r"^\d{4}-\d{2}\.md$").unwrap().is_match(file) => {
-            "log"
-        }
+        ["memory", "logs", file] if MONTH_FILE.is_match(file) => "log",
         ["handoffs", "sessions", "active" | "completed" | "stale", _] => "session",
         ["handoffs", "workstreams", _] | ["handoffs", "workstreams", "archive", _] => "workstream",
         ["executions", "tasks", _] => "execution_task",
@@ -258,38 +255,65 @@ pub fn validate_all(docs: &Documents) -> Result<()> {
 fn validate_namespace(docs: &Documents) -> Result<()> {
     crate::execution::validate_links(docs)?;
     let mut identities = std::collections::BTreeSet::new();
+    // Index only this validated namespace view. Rebuilding for every validation
+    // avoids stale aliases and keeps cross-namespace inheritance unchanged.
+    let mut parsed = BTreeMap::new();
+    let mut projects = BTreeMap::new();
+    let mut workstreams = BTreeMap::new();
     for (p, c) in docs {
         let kind = path_kind(p)?;
         if matches!(kind, "log" | "template") {
             continue;
         }
         let (m, _) = parse(c)?;
-        if kind == "session" {
-            if !identities.insert(format!("session:{}", string(&m, "session_id"))) {
-                return Err(invalid("重复Session身份"));
-            }
-            let ws = find(docs, "workstream_id", string(&m, "workstream_id"))?
-                .ok_or_else(|| invalid("Session关联Workstream不存在"))?;
-            let (wm, _) = parse(&docs[&ws])?;
-            if canonical(docs, string(&m, "project"))? != canonical(docs, string(&wm, "project"))? {
-                return Err(invalid("Session与Workstream跨项目绑定"));
+        if kind == "project" {
+            let id = string(&m, "project_id");
+            // canonical() counts a project once even if an alias repeats its ID.
+            let mut names = strings(&m, "aliases");
+            names.push(id.to_owned());
+            names.sort();
+            names.dedup();
+            for name in names {
+                slug(&name)?;
+                if projects.insert(name, id.to_owned()).is_some() {
+                    return Err(invalid("项目ID或别名存在歧义"));
+                }
             }
         }
         if kind == "workstream"
-            && !identities.insert(format!("workstream:{}", string(&m, "workstream_id")))
+            && workstreams
+                .insert(string(&m, "workstream_id").to_owned(), p)
+                .is_some()
         {
             return Err(invalid("重复Workstream身份"));
         }
+        parsed.insert(p, (kind, m));
+    }
+    let resolve = |project: &str| -> Result<String> {
+        slug(project)?;
+        Ok(projects
+            .get(project)
+            .cloned()
+            .unwrap_or_else(|| project.to_owned()))
+    };
+    for (kind, m) in parsed.values() {
+        let kind = *kind;
+        if kind == "session" {
+            if !identities.insert(format!("session:{}", string(m, "session_id"))) {
+                return Err(invalid("重复Session身份"));
+            }
+            let ws = workstreams
+                .get(string(m, "workstream_id"))
+                .ok_or_else(|| invalid("Session关联Workstream不存在"))?;
+            let wm = &parsed[ws].1;
+            if resolve(string(m, "project"))? != resolve(string(wm, "project"))? {
+                return Err(invalid("Session与Workstream跨项目绑定"));
+            }
+        }
         if kind == "project_topic"
-            && !docs.contains_key(&format!("memory/project/{}.md", string(&m, "project_id")))
+            && !docs.contains_key(&format!("memory/project/{}.md", string(m, "project_id")))
         {
             return Err(invalid("专题缺少项目入口"));
-        }
-        if kind == "project" {
-            canonical(docs, string(&m, "project_id"))?;
-            for alias in strings(&m, "aliases") {
-                canonical(docs, &alias)?;
-            }
         }
     }
     Ok(())

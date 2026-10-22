@@ -5,6 +5,7 @@ pub mod api;
 #[cfg(feature = "service")]
 pub mod auth;
 pub mod backup;
+pub mod build_info;
 pub mod document;
 pub mod engine;
 pub mod error;

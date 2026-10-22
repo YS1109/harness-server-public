@@ -1,0 +1,66 @@
+{
+  "version": "agent-home-live-example-v1",
+  "cases": [
+    {
+      "id": "client-chinese",
+      "project": "agent-home",
+      "query": "客户端规则",
+      "expected_topic": "client-rules"
+    },
+    {
+      "id": "client-symbol",
+      "project": "agent-home",
+      "query": "scoped-v2",
+      "expected_topic": "client-rules"
+    },
+    {
+      "id": "client-alias",
+      "project": "agent-home",
+      "query": "embedded rules",
+      "expected_topic": "client-rules"
+    },
+    {
+      "id": "namespace-explicit",
+      "project": "agent-home",
+      "query": "",
+      "expected_topic": "namespace",
+      "topic": "namespace"
+    },
+    {
+      "id": "cost-stats",
+      "project": "agent-home",
+      "query": "stats",
+      "expected_topic": "cost-and-evaluation"
+    },
+    {
+      "id": "cost-alias",
+      "project": "agent-home",
+      "query": "execution_group_id",
+      "expected_topic": "cost-and-evaluation",
+      "required_topics": [
+        "shared-http-service"
+      ]
+    },
+    {
+      "id": "client-subject",
+      "project": "agent-home",
+      "query": "优化客户端规则，HTTP服务只是背景",
+      "expected_topic": "client-rules",
+      "required_topics": [
+        "shared-http-service"
+      ]
+    },
+    {
+      "id": "unrelated-one",
+      "project": "agent-home",
+      "query": "天文望远镜选型",
+      "expected_topic": null
+    },
+    {
+      "id": "negation-one",
+      "project": "agent-home",
+      "query": "不要修改客户端规则",
+      "expected_topic": null
+    }
+  ]
+}
