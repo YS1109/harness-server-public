@@ -22,6 +22,11 @@ use subtle::ConstantTimeEq;
 pub(crate) fn router(app: App) -> Router {
     let private = Router::new()
         .route("/admin/api/overview", get(overview))
+        .route("/admin/api/runtime", get(runtime))
+        .route("/admin/api/storage", get(storage))
+        .route("/admin/api/routing-evaluation", get(routing_evaluation))
+        .route("/admin/api/executions", get(executions))
+        .route("/admin/api/execution", get(execution))
         .route("/admin/api/namespaces", post(create))
         .route("/admin/api/namespaces/{id}", put(update_space))
         .route("/admin/api/agents/{id}", put(update_agent))
@@ -183,6 +188,9 @@ async fn update_agent(
 struct ListQuery {
     namespace: String,
     kind: Option<String>,
+    q: Option<String>,
+    status: Option<String>,
+    sort: Option<String>,
     project: Option<String>,
     limit: Option<u64>,
     offset: Option<u64>,
@@ -196,7 +204,7 @@ struct GetQuery {
 async fn documents(State(app): State<App>, Query(q): Query<ListQuery>) -> Result<Json<Value>> {
     tokio::task::spawn_blocking(move || {let store=app.store.lock().map_err(|_|invalid("存储锁不可用"))?;registry::space(&store.state.documents,&q.namespace)?;
         let docs=namespace::view(&store.state.documents,&q.namespace,false);
-        let mut v=engine::list(&docs,&json!({"kind":q.kind.unwrap_or_default(),"project":q.project.unwrap_or_default(),"limit":q.limit.unwrap_or(20),"offset":q.offset.unwrap_or(0)}))?;
+        let mut v=engine::list(&docs,&json!({"kind":q.kind.unwrap_or_default(),"project":q.project.unwrap_or_default(),"limit":q.limit.unwrap_or(20),"offset":q.offset.unwrap_or(0),"q":q.q.unwrap_or_default(),"status":q.status.unwrap_or_default(),"sort":q.sort.unwrap_or_default()}))?;
         namespace::annotate(&mut v,&store.state.documents,&q.namespace);Ok(Json(v))
     }).await.map_err(|_|invalid("文档读取失败"))?
 }
@@ -216,4 +224,144 @@ async fn document(State(app): State<App>, Query(q): Query<GetQuery>) -> Result<J
     })
     .await
     .map_err(|_| invalid("文档读取失败"))?
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeQuery {
+    namespace: Option<String>,
+    days: Option<u32>,
+}
+async fn runtime(State(app): State<App>, Query(q): Query<RuntimeQuery>) -> Result<Json<Value>> {
+    let days = crate::api::stats_days(q.days)?;
+    tokio::task::spawn_blocking(move || {
+        let (storage, root, names) = {
+            let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+            if let Some(ns) = &q.namespace {
+                registry::space(&store.state.documents, ns)?;
+            }
+            (
+                store.usage_snapshot(),
+                store.root().to_owned(),
+                registry::overview(&store.state.documents, &app.principals)?["namespaces"].clone(),
+            )
+        };
+        let mut r = app
+            .metrics
+            .report(days, q.namespace.as_deref(), None, chrono::Utc::now());
+        if let Some(groups) = r["namespaces"].as_array_mut() {
+            for g in groups {
+                g["name"] = names
+                    .as_array()
+                    .and_then(|a| a.iter().find(|s| s["id"] == g["id"]))
+                    .map(|s| s["name"].clone())
+                    .unwrap_or_else(|| g["id"].clone());
+            }
+        }
+        r["version"] = json!(env!("CARGO_PKG_VERSION"));
+        r["uptime_seconds"] = json!(app.metrics.started.elapsed().as_secs());
+        r["routing_evaluation"] = crate::routing_eval::latest(&root, q.namespace.as_deref());
+        r["storage"] = storage;
+        r["storage_scope"] = json!("存储容量为全局；namespace筛选仅过滤统计事件");
+        Ok(Json(r))
+    })
+    .await
+    .map_err(|_| invalid("运行概览读取失败"))?
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionQuery {
+    namespace: String,
+    status: Option<String>,
+    project: Option<String>,
+    q: Option<String>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+async fn executions(
+    State(app): State<App>,
+    Query(q): Query<ExecutionQuery>,
+) -> Result<Json<Value>> {
+    tokio::task::spawn_blocking(move|| {
+        let store=app.store.lock().map_err(|_|invalid("存储锁不可用"))?;registry::space(&store.state.documents,&q.namespace)?;
+        let docs=namespace::view(&store.state.documents,&q.namespace,false);
+        let mut query=json!({"sort":"updated_desc","q":q.q.unwrap_or_default(),"limit":q.limit.unwrap_or(20),"offset":q.offset.unwrap_or(0)});
+        if let Some(s)=q.status.filter(|s|!s.is_empty()){query["status"]=json!(s);}
+        if let Some(p)=q.project.filter(|s|!s.is_empty()){query["project"]=json!(p);}
+        crate::execution::list(&docs,&query).map(Json)
+    }).await.map_err(|_|invalid("执行列表读取失败"))?
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionGetQuery {
+    namespace: String,
+    task_id: String,
+}
+async fn execution(
+    State(app): State<App>,
+    Query(q): Query<ExecutionGetQuery>,
+) -> Result<Json<Value>> {
+    tokio::task::spawn_blocking(move || {
+        let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+        registry::space(&store.state.documents, &q.namespace)?;
+        let docs = namespace::view(&store.state.documents, &q.namespace, false);
+        let mut response = crate::execution::get(&docs, &q.task_id)?;
+        response["attempts"] =
+            crate::execution::list_attempts(&docs, &q.task_id, &json!({"limit":20,"offset":0}))?;
+        if let Some(rows) = response["attempts"]["attempts"].as_array_mut() {
+            for row in rows {
+                let attempt = crate::execution::get_attempt(
+                    &docs,
+                    &q.task_id,
+                    row["attempt_id"].as_str().unwrap_or(""),
+                )?;
+                *row = attempt["attempt"].clone();
+            }
+        }
+        Ok(Json(response))
+    })
+    .await
+    .map_err(|_| invalid("执行详情读取失败"))?
+}
+
+#[derive(Default)]
+pub(crate) struct StorageCache(std::sync::Mutex<Option<(std::time::Instant, Value)>>);
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StorageQuery {
+    #[serde(default)]
+    fresh: bool,
+}
+async fn storage(State(app): State<App>, Query(q): Query<StorageQuery>) -> Result<Json<Value>> {
+    tokio::task::spawn_blocking(move || {
+        if !q.fresh {if let Ok(cache)=app.capacity.0.lock(){if let Some((time,result))=cache.as_ref().filter(|(t,_)|t.elapsed().as_secs()<30){let mut r=result.clone();r["cache_hit"]=json!(true);r["cache_age_seconds"]=json!(time.elapsed().as_secs());return Ok(Json(r));}}}
+        let root={let store=app.store.lock().map_err(|_|invalid("存储锁不可用"))?;store.root().to_owned()};
+        let result=json!({"storage":crate::store::Store::disk_usage(&root)?,"sample_at":chrono::Utc::now(),"cache_hit":false,"cache_age_seconds":0});
+        if let Ok(mut cache)=app.capacity.0.lock(){*cache=Some((std::time::Instant::now(),result.clone()));}
+        Ok(Json(result))
+    }).await.map_err(|_|invalid("磁盘容量读取失败"))?
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvaluationQuery {
+    namespace: Option<String>,
+}
+async fn routing_evaluation(
+    State(app): State<App>,
+    Query(q): Query<EvaluationQuery>,
+) -> Result<Json<Value>> {
+    let root = {
+        let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+        if let Some(ns) = &q.namespace {
+            registry::space(&store.state.documents, ns)?;
+        }
+        store.root().to_owned()
+    };
+    tokio::task::spawn_blocking(move || {
+        Ok(Json(
+            json!({"latest":crate::routing_eval::latest(&root,q.namespace.as_deref())}),
+        ))
+    })
+    .await
+    .map_err(|_| invalid("评测读取失败"))?
 }

@@ -39,7 +39,7 @@ pub fn view(docs: &Documents, namespace: &str, inherit_shared: bool) -> Document
     if namespace != "shared" && inherit_shared {
         result.extend(
             docs.iter()
-                .filter(|(p, _)| shared_memory(p))
+                .filter(|(p, _)| shared_memory(p) || p.starts_with("memory/templates/"))
                 .map(|(p, c)| (p.clone(), c.clone())),
         );
     }

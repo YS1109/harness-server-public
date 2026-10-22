@@ -13,7 +13,7 @@
 
 ## 1. 安装客户端
 
-优先检查已有 `harness --version`；需要安装时，从 [GitHub Releases](https://github.com/YS1109/harness-server-public/releases) 选择本机 OS / 架构对应的包，校验 `SHA256SUMS` 后解压，按包内 `INSTALL.md` 配置 PATH。预构建包支持 macOS Apple Silicon / Intel、Linux ARM64 / x64 和 Windows x64，不需要 Rust。兼容基线和具体命令见 [CLIENT-INSTALL.md](CLIENT-INSTALL.md)。当前私有仓库需要读取权限；若还没有已发布版本，不能假定下载可用。
+优先检查已有 `harness --version`；需要安装时，从 [GitHub Releases](https://github.com/YS1109/harness-server-public/releases) 选择本机 OS / 架构对应的包，校验 `SHA256SUMS` 后解压，按包内 `INSTALL.md` 配置 PATH。预构建包支持 macOS Apple Silicon / Intel、Linux ARM64 / x64 和 Windows x64，不需要 Rust。兼容基线和具体命令见 [CLIENT-INSTALL.md](CLIENT-INSTALL.md)。公开仓库Release可直接下载；以实际发布版本为准。
 
 已有源码且选择从源码安装时，在仓库根目录执行：
 
@@ -22,9 +22,20 @@ cargo install --path . --locked --bin harness
 harness --version
 ```
 
-源码安装需要 Rust 1.88 或以上。没有源码时先克隆 README 中的私有仓库；部署机必须具备读取权限。Windows 同样可使用 Cargo 安装。两种方式都要检查实际工具进程的 PATH 能找到 `harness` / `harness.exe`，不能只验证另一个终端。
+源码安装需要 Rust 1.88 或以上。没有源码时先克隆README中的公开仓库。Windows 同样可使用 Cargo 安装。两种方式都要检查实际工具进程的 PATH 能找到 `harness` / `harness.exe`，不能只验证另一个终端。
 
 ## 2. 配置连接和项目映射
+
+v0.4客户端可用下面的统一入口，URL使用全局参数，token仍由已有执行环境注入。命令核验服务身份与授权后才原子合并配置，已有配置会留备份；空配置沿用服务凭据绑定的Agent ID，已有ID不自动改名；不注册身份、不生成空间、不保存token值：
+
+```sh
+harness --url https://your-harness.example setup --token-env HARNESS_TOKEN --project demo --project-root /path/to/demo
+harness doctor
+harness bind demo /path/to/demo
+```
+
+参数化调用适合机器人；在交互终端未提供URL时会提示填写或保留现有值。独立空间仍由管理员创建授权，用`connect`选择。`doctor`只读显示有效配置/服务默认值、项目路径和连接问题，不写试验记忆；它不是日常任务步骤。新服务通过connect/setup启用scoped-v2；旧服务继续v1，不直接删掉预检。
+
 
 默认配置位置：Unix/macOS 的 `$XDG_CONFIG_HOME/harness-server/client.json`，未设该变量时为 `~/.config/harness-server/client.json`；Windows 为 `%APPDATA%\harness-server\client.json`。也可用 `--config` 或 `HARNESS_CLIENT_CONFIG` 明确指定。
 
@@ -68,7 +79,7 @@ harness health
 
 GitHub 镜像的发布与拉取参照 [镜像说明](IMAGES.md)。镜像只含源码构建产物，不含 token、项目记忆或备份；GHCR 拉取凭据与 Harness 设备 token 是两种独立凭据。
 
-需要延续旧记忆时，在服务停止且目标 store 为空的条件下离线导入，保留源目录备份，核对文档数量和选定文档 SHA。包括个人偏好与全部 Session/Workstream；不导入旧 runtime、派生索引或凭据。已有目标不能用导入覆盖，不执行 `down -v`。迁移不是持续双向同步。
+需要延续旧记忆时，在服务停止且目标 store 为空的条件下离线导入，保留源目录备份，核对文档数量和选定文档 SHA。包括个人偏好与全部 Session/Workstream；不导入旧 runtime、派生索引或凭据。已有目标不能用导入覆盖，不执行 `down -v`。迁移不是持续双向同步。文档模板也需单独核验：先按[模板资源指南](TEMPLATE-RESOURCES.md)确认服务/备份工具支持，再核对三份原文；已有store仅补迁缺失模板，不重新导入或仅迁流程链接。
 
 ## 5. 验证后接入 Agent / 机器人
 

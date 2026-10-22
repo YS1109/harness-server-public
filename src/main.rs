@@ -21,6 +21,11 @@ enum Command {
         #[arg(long, env = "HARNESS_AUTH_CONFIG")]
         auth_config: Option<PathBuf>,
     },
+    /// Offline read-only capacity/retention preview; apply only expired telemetry.
+    Maintenance {
+        #[arg(long)]
+        prune_metrics: bool,
+    },
     Import {
         #[arg(long)]
         source: PathBuf,
@@ -31,6 +36,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut store = Store::open(args.data_dir)?;
     match args.command {
+        Command::Maintenance { prune_metrics } => {
+            let ledger = harness_server::metrics::Ledger::new(store.root());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"storage":store.usage()?,"metrics":ledger.retention(prune_metrics,chrono::Utc::now())?})
+                )?
+            );
+        }
         Command::Import { source } => {
             let docs = import_directory(&source)?;
             let count = docs.len();

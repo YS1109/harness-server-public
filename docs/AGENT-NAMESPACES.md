@@ -87,7 +87,7 @@ route/start 对读取范围**统一排序和统一预算**：最多 1 个项目�
 - `X-Harness-Namespace`：单次操作空间；`X-Harness-Agent-Id`：必须与凭据一致；route/start 可带逗号分隔 `X-Harness-Read-Namespaces`。
 - 管理接口为 `/admin/api/overview`、`/namespaces`、`/namespaces/{id}`、`/agents/{id}`、`/documents`、`/document`；只接受独立管理员凭据，写入需 Idempotency-Key，更新需 expected_sha256。没有跨域授权或通配符权限。
 - 文档 API 拒绝 `control/...` 和 `namespaces/...` 物理路径；授权在存储锁内再次核验。历史回执含已撤权空间时禁止重放正文。
-- scoped 客户端写入前只读核验 health，拒绝忽略身份/空间的新请求头的旧服务；每次写入多一次网络往返，不能把命令处理耗时当完整网络成本。
+- v1 scoped客户端写入前只读核验health，拒绝忽略空间头的旧服务。v0.4 connect/setup确认scoped-v2后，使用独立`/v2/scoped/start|finish|abort|documents`写入口，一次完成身份/授权与事务；不兼容服务失败时不改投v1写入。保留原配置则继续v1。详细口径见[运行指南](OPERATIONS.md)。
 
 shared 继续沿用原逻辑路径，其他文档物理路径为 `namespaces/<id>/<逻辑路径>`。管理事实为 `control/namespaces/*.md`、`control/agents/*.md`、`control/audit/YYYY-MM.md`，与记忆、持久回执同一次原子 HEAD 提交和回滚；不增加数据库。
 

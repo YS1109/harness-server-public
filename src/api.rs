@@ -23,37 +23,30 @@ use std::{
     time::Instant,
 };
 
-#[derive(Default, Serialize)]
-struct Metrics {
-    observed_calls: u64,
-    failures: u64,
-    retries: u64,
-    handler_ms_total: f64,
-    returned_characters: Option<u64>,
-    returned_character_observed_calls: u64,
-    handoff_characters: Option<u64>,
-    handoff_character_observed_calls: u64,
-    commands: BTreeMap<String, u64>,
-}
 #[derive(Clone)]
 pub(crate) struct App {
     pub(crate) store: Arc<Mutex<Store>>,
     pub(crate) principals: Arc<Vec<Principal>>,
     pub(crate) admin_hash: Option<String>,
-    metrics: Arc<Mutex<BTreeMap<String, Metrics>>>,
+    pub(crate) metrics: Arc<crate::metrics::Ledger>,
+    pub(crate) capacity: Arc<crate::admin::StorageCache>,
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code) = match &self {
             Self::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::Invalid(_) => (StatusCode::BAD_REQUEST, "validation"),
+            Self::Invalid(_) | Self::Field { .. } | Self::Budget { .. } => {
+                (StatusCode::BAD_REQUEST, "validation")
+            }
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             Self::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage"),
         };
         (
             status,
-            Json(json!({"error":{"code":code,"message":self.to_string()}})),
+            Json(
+                json!({"error":{"code":code,"message":self.to_string(),"details":self.details()}}),
+            ),
         )
             .into_response()
     }
@@ -100,16 +93,23 @@ pub fn router_with_admin(
         })
         .transpose()?;
     registry::initialize(&mut store, &principals, admin_hash.is_some())?;
+    let ledger = crate::metrics::Ledger::new(store.root());
     let app = App {
         store: Arc::new(Mutex::new(store)),
         principals: Arc::new(principals),
         admin_hash,
-        metrics: Arc::new(Mutex::new(BTreeMap::new())),
+        metrics: Arc::new(ledger),
+        capacity: Arc::new(crate::admin::StorageCache::default()),
     };
     let admin = crate::admin::router(app.clone());
     let private = Router::new()
+        .route("/v2/scoped/start", post(start))
+        .route("/v2/scoped/finish", post(finish))
+        .route("/v2/scoped/abort", post(abort))
+        .route("/v2/scoped/documents", put(document_put))
         .route("/v1/namespaces", get(discovery))
         .route("/v1/route", post(route))
+        .route("/v1/eval-routing", post(eval_routing))
         .route("/v1/start", post(start))
         .route("/v1/finish", post(finish))
         .route("/v1/abort", post(abort))
@@ -148,6 +148,8 @@ pub fn router_with_admin(
         .merge(admin))
 }
 async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next) -> Response {
+    let scoped_v2 = req.uri().path().starts_with("/v2/scoped/");
+    let logical_path = req.uri().path().replacen("/v2/scoped/", "/v1/", 1);
     let result = (|| -> Result<Access> {
         let bearer = req
             .headers()
@@ -173,7 +175,10 @@ async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next
             .or_else(|| policy.default_read_namespaces.first().cloned())
             .unwrap_or_else(|| "shared".into());
         crate::document::slug(&ns)?;
-        let routing = matches!(req.uri().path(), "/v1/route" | "/v1/start");
+        let routing = matches!(
+            logical_path.as_str(),
+            "/v1/route" | "/v1/start" | "/v1/eval-routing"
+        );
         let scopes = if let Some(header) = read_header("X-Harness-Read-Namespaces")? {
             if !routing {
                 return Err(invalid("读取范围只用于route/start"));
@@ -198,6 +203,7 @@ async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next
             return Err(invalid("读取范围必须唯一，最多8个namespace"));
         }
         let access = Access {
+            protocol: if scoped_v2 { "scoped-v2" } else { "v1" }.into(),
             agent_id: principal.agent_id.clone(),
             namespace: ns.clone(),
             namespace_explicit: requested.is_some(),
@@ -206,9 +212,10 @@ async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next
             inherit_shared: policy.read_namespaces.iter().any(|s| s == "shared"),
             read_namespaces: scopes,
         };
-        if req.uri().path() != "/v1/namespaces" {
-            let write = req.method() != axum::http::Method::GET && req.uri().path() != "/v1/route";
-            let handoff = matches!(req.uri().path(), "/v1/finish" | "/v1/abort");
+        if logical_path != "/v1/namespaces" {
+            let write = req.method() != axum::http::Method::GET
+                && !matches!(logical_path.as_str(), "/v1/route" | "/v1/eval-routing");
+            let handoff = matches!(logical_path.as_str(), "/v1/finish" | "/v1/abort");
             if !(handoff && requested.is_none()) {
                 registry::ensure(&store.state.documents, &access, write)?;
             }
@@ -229,7 +236,14 @@ async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next
         }
         Err(e) => return e.into_response(),
     }
-    next.run(req).await
+    let mut response = next.run(req).await;
+    if scoped_v2 {
+        response.headers_mut().insert(
+            "X-Harness-Protocol",
+            axum::http::HeaderValue::from_static("scoped-v2"),
+        );
+    }
+    response
 }
 async fn discovery(
     State(app): State<App>,
@@ -252,8 +266,13 @@ async fn execute(
 ) -> Result<Json<Value>> {
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();
+        let mut lock_wait_ms=None; let mut commit_ms=None; let mut operation_ms=None;
         let result = (|| {
             let mut store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+            lock_wait_ms=Some(start.elapsed().as_secs_f64()*1000.0);
+            store.last_commit_ms=None;
+            let operation_started=Instant::now();
+            let result=(|| {
             if matches!(command,"start"|"finish"|"abort") && !access.namespace_explicit {
                 let principal=app.principals.iter().find(|p|p.agent_id==access.agent_id).ok_or_else(||Error::Forbidden("身份不存在".into()))?;
                 let policy=registry::agent(&store.state.documents,principal)?;
@@ -382,29 +401,25 @@ async fn execute(
                     json!({"agent_id":access.agent_id,"namespace":access.namespace});
             }
             Ok(response)
+            })();
+            commit_ms=store.last_commit_ms;
+            operation_ms=Some((operation_started.elapsed().as_secs_f64()*1000.0-commit_ms.unwrap_or(0.0)).max(0.0));
+            result
         })();
-        if !result.as_ref().is_ok_and(|v| v["mode"] == "SKIP")
-            && let Ok(mut metrics) = app.metrics.lock()
-        {
-            let metrics = metrics.entry(access.namespace.clone()).or_default();
-            metrics.observed_calls += 1;
-            metrics.failures += u64::from(result.is_err());
-            metrics.handler_ms_total += start.elapsed().as_secs_f64() * 1000.0;
-            *metrics.commands.entry(command.into()).or_default() += 1;
-            if let Ok(v) = &result {
-                metrics.retries += u64::from(v["idempotent"] == true);
-                if let Some(count) = v["returned_characters"]
-                    .as_u64()
-                    .or_else(|| v["memories"]["returned_characters"].as_u64())
-                {
-                    *metrics.returned_characters.get_or_insert(0) += count;
-                    metrics.returned_character_observed_calls += 1;
-                }
-                if let Some(count) = v["handoff_characters"].as_u64() {
-                    *metrics.handoff_characters.get_or_insert(0) += count;
-                    metrics.handoff_character_observed_calls += 1;
-                }
-            }
+        if !result.as_ref().is_ok_and(|v| v["mode"] == "SKIP") {
+            let response = result.as_ref().ok();
+            let count = |field: &str| response.and_then(|v| v[field].as_u64().or_else(|| v["memories"][field].as_u64()));
+            app.metrics.record(&crate::metrics::Event {
+                protocol:Some(access.protocol.clone()), execution_group_id:response.and_then(|v|v["execution_group_id"].as_str()).or_else(||value["execution_group_id"].as_str()).filter(|id|crate::document::slug(id).is_ok()).map(str::to_owned),
+                lock_wait_ms, operation_ms, commit_ms,
+                event_id:Some(uuid::Uuid::new_v4().to_string()), service_version:Some(env!("CARGO_PKG_VERSION").into()),
+                timestamp:chrono::Utc::now(), namespace:access.namespace.clone(), command:command.into(),
+                project:response.and_then(|v|v["project"].as_str()).or_else(||value["project"].as_str()).filter(|p|crate::document::slug(p).is_ok()).map(str::to_owned),
+                handler_ms:start.elapsed().as_secs_f64()*1000.0, success:result.is_ok(),
+                retry:response.is_some_and(|v|v["idempotent"]==true),
+                error_code:result.as_ref().err().map(|e|e.code().to_owned()),
+                returned_characters:count("returned_characters"),handoff_characters:count("handoff_characters"),
+            });
         }
         result.map(Json)
     })
@@ -461,6 +476,9 @@ async fn document_put(
 struct PathQuery {
     path: Option<String>,
     kind: Option<String>,
+    q: Option<String>,
+    status: Option<String>,
+    sort: Option<String>,
     project: Option<String>,
     limit: Option<u64>,
     offset: Option<u64>,
@@ -473,7 +491,7 @@ async fn document(
     if let Some(path) = q.path {
         execute(app, access, "get", json!({"path":path}), None).await
     } else {
-        execute(app, access,"list",json!({"kind":q.kind.unwrap_or_default(),"project":q.project.unwrap_or_default(),"limit":q.limit.unwrap_or(20),"offset":q.offset.unwrap_or(0)}),None).await
+        execute(app, access,"list",json!({"kind":q.kind.unwrap_or_default(),"project":q.project.unwrap_or_default(),"limit":q.limit.unwrap_or(20),"offset":q.offset.unwrap_or(0),"q":q.q.unwrap_or_default(),"status":q.status.unwrap_or_default(),"sort":q.sort.unwrap_or_default()}),None).await
     }
 }
 async fn health(
@@ -485,22 +503,53 @@ async fn health(
         registry::ensure(&store.state.documents,&access,false)?;
         let docs=namespace::view(&store.state.documents,&access.namespace,access.inherit_shared);
         validate_all(&docs)?;
-        Ok(Json(json!({"registry_version":1,"status":"healthy","revision":if access.namespace=="shared" {store.revision.clone()} else {None},"documents":docs.len(),"identity":{"agent_id":access.agent_id,"namespace":access.namespace},"check_scope":"当前namespace及获准继承的共享记忆；结构、身份与引用，不检查外部链接"})))
+        Ok(Json(json!({"registry_version":1,"write_protocols":["v1","scoped-v2"],"version":env!("CARGO_PKG_VERSION"),"status":"healthy","revision":if access.namespace=="shared" {store.revision.clone()} else {None},"documents":docs.len(),"identity":{"agent_id":access.agent_id,"namespace":access.namespace},"check_scope":"当前namespace及获准继承的共享记忆；结构、身份与引用，不检查外部链接"})))
     }).await.map_err(|_|invalid("健康检查失败"))?
+}
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatsQuery {
+    pub days: Option<u32>,
+    pub project: Option<String>,
+}
+pub(crate) fn stats_days(days: Option<u32>) -> Result<u32> {
+    let days = days.unwrap_or(30);
+    if !matches!(days, 7 | 30 | 90) {
+        return Err(invalid("days必须为7、30或90"));
+    }
+    Ok(days)
 }
 async fn stats(
     State(app): State<App>,
     Extension(access): Extension<Access>,
+    Query(q): Query<StatsQuery>,
 ) -> Result<Json<Value>> {
-    {
-        let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
-        registry::ensure(&store.state.documents, &access, false)?;
+    let days = stats_days(q.days)?;
+    let q = StatsQuery {
+        days: q.days,
+        project: q.project.filter(|p| !p.is_empty()),
+    };
+    if let Some(p) = &q.project {
+        crate::document::slug(p)?;
     }
-    let m = app.metrics.lock().map_err(|_| invalid("统计不可用"))?;
-    let empty = Metrics::default();
-    Ok(Json(
-        json!({"since":"process-start","identity":{"agent_id":access.agent_id,"namespace":access.namespace},"metrics":m.get(&access.namespace).unwrap_or(&empty),"scope":"当前namespace、成功鉴权并进入处理器的HTTP调用。重启清零；daily、health和stats不采集。","net_benefit":"尚未测量"}),
-    ))
+    tokio::task::spawn_blocking(move || {
+        {
+            let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+            registry::ensure(&store.state.documents, &access, false)?;
+        }
+        let mut report = app.metrics.report(
+            days,
+            Some(&access.namespace),
+            q.project.as_deref(),
+            chrono::Utc::now(),
+        );
+        report["identity"] = json!({"agent_id":access.agent_id,"namespace":access.namespace});
+        report["since"] = json!("persisted-events");
+        report["scope"] = report["metrics_scope"].clone();
+        Ok(Json(report))
+    })
+    .await
+    .map_err(|_| invalid("统计读取失败"))?
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -670,4 +719,31 @@ async fn context_put(
         key(&h),
     )
     .await
+}
+
+async fn eval_routing(
+    State(app): State<App>,
+    Extension(access): Extension<Access>,
+    Json(v): Json<Value>,
+) -> Result<Json<Value>> {
+    tokio::task::spawn_blocking(move || {
+        let (docs, root) = {
+            let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+            registry::ensure(&store.state.documents, &access, false)?;
+            // Authorize every scope at snapshot time, not from cached discovery.
+            for ns in &access.read_namespaces {
+                let mut scoped = access.clone();
+                scoped.namespace = ns.clone();
+                registry::ensure(&store.state.documents, &scoped, false)?;
+            }
+            (store.state.documents.clone(), store.root().to_owned())
+        };
+        let mut report =
+            crate::routing_eval::evaluate(&docs, &access.read_namespaces, &access.namespace, &v)?;
+        crate::routing_eval::save(&root, &access.namespace, &mut report);
+        report["identity"] = json!({"agent_id":access.agent_id,"namespace":access.namespace});
+        Ok(Json(report))
+    })
+    .await
+    .map_err(|_| invalid("路由评测失败"))?
 }

@@ -1,10 +1,18 @@
 # Harness Server
 
-Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.3.2**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
+Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.4.0（开发版）**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
 
 服务集中存储 Markdown，客户端通过 HTTP 路由记忆、维护 Session/Workstream 和提交结果。本版使用 Rust 引擎，不执行原 agent-home Python 引擎。**v1 是有限协议，不承诺兼容旧 Python 的全部 flags、字段或行为。**
 
 QQ 机器人 / Pi 主 Agent 可通过独立执行记录API持久化调度摘要、任务/尝试状态和执行中检查点，支持来源消息去重、条件领取、重启读取及独立的结果回复状态。把 [Pi执行记录接入指南](docs/PI-EXECUTION-INTEGRATION.md) 交给机器人代码的Agent集成；设计与后续边界见 [执行记录设计](docs/EXECUTION-RECORDS.md)。服务不执行任务或自动重派，真实QQ/Pi接入尚未验证。
+
+## v0.4 易用性与运行工作台
+
+本版源码提供 `harness setup`、`doctor`、`bind`；`connect/setup` 确认新服务后启用单请求写入，旧配置继续使用v1预检。结果可从stdin提交，finish自动进行本地格式校验；`--timings`输出实际HTTP请求数及CLI进程内耗时。普通小任务继续零调用，连续任务不按每次回复重复开始和收尾。
+
+`/admin` 增加运行概览、近7/30/90天成本统计、最近交接、执行任务只读查询，以及搜索、状态筛选和更新时间排序。统计独立保存到服务本地，重启保留，不进入记忆/备份。磁盘容量按需读取，统计展示各命令阶段耗时和采样时间；筛选保留、检查点与尝试时间线便于续查。容量页面只读，维护需显式执行。使用、升级边界与指标口径见 [运行与性能指南](docs/OPERATIONS.md)。显式检索质量评测见[路由评测指南](docs/ROUTING-EVALUATION.md)，不增加每轮评分；任务净收益尚未测量。正式安装包状态以Releases为准；本机安装和云端部署不会因源码更新自动升级。
+
+文档模板作为独立Markdown资源按需get，支持原文读写、template列表与备份，不进入普通route/start正文。旧模板补迁与回退边界见[模板资源指南](docs/TEMPLATE-RESOURCES.md)。
 
 ## Agent 身份与 namespace
 
@@ -164,7 +172,7 @@ harness --url http://127.0.0.1:8080 put --path '<文档路径>' --file /tmp/docu
 | POST | `/v1/abort` | 中止 Session |
 | PUT | `/v1/documents` | JSON `{path, content, expected_sha256}` 写文档 |
 
-`/v1/route` 是只读 POST，无需幂等键。`expected_sha256` 只在新建文档时允许省略。`/v1/stats` 仅覆盖本进程成功鉴权并进入处理器的调用，重启清零；不覆盖鉴权/JSON 解析失败，不等同原 CLI 持久统计。未观测字符数为 `null`，同时报告字符观测调用量；字符数不是 token。统计不代表业务净收益、任务质量或节省的 token。
+`/v1/route` 是只读 POST，无需幂等键。`expected_sha256` 只在新建文档时允许省略。v0.4的`/v1/stats?days=30`覆盖成功采集且进入处理器的业务调用，按空间隔离，重启保留；不覆盖鉴权/JSON解析失败，也不包含CLI/网络完整耗时。旧服务统计仍为进程内口径。未观测字符数为 `null`，同时报告字符观测调用量；字符数不是 token。统计不代表业务净收益、任务质量或节省的 token。
 
 ```sh
 curl --fail-with-body -H "Authorization: Bearer $HARNESS_TOKEN" http://127.0.0.1:8080/v1/health

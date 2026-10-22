@@ -4,14 +4,14 @@
 
 ## 发布
 
-将工作流推送到 GitHub 后，可在 Actions 中手动运行 **Publish image**（默认选择 main）。也可推送版本标签，例如与当前 Cargo 版本一致的 `v0.3.2`；标签与 Cargo.toml 不一致时拒绝发布。发布前自动调用 CI：Linux 格式/Clippy/测试、容器检查及 Windows 客户端编译；全部通过后才上传镜像。
+将工作流推送到 GitHub 后，可在 Actions 中手动运行 **Publish image**（默认选择 main）。也可推送版本标签，例如与当前 Cargo 版本一致的 `v0.4.0`；标签与 Cargo.toml 不一致时拒绝发布。发布前自动调用 CI：Linux 格式/Clippy/测试、容器检查及 Windows 客户端编译；全部通过后才上传镜像。
 
 工作流使用仓库内置 `GITHUB_TOKEN` 和 `packages: write`，无需把个人 PAT 或 Harness token 配置成发布 secret。GHCR 新包通常默认私有，发布后检查包的访问权限及仓库关联，公开源码不代表GHCR包已公开；按实际包访问权限验证匿名拉取。保持只向可信用户提供记忆服务。
 
 | 标签 | 含义 |
 | --- | --- |
 | `sha-<完整提交SHA>` | 精确对应一次源码提交 |
-| `0.3.2` 等版本号 | 由 `v0.3.2` 等有效版本标签产生 |
+| `0.4.0` 等版本号 | 由 `v0.4.0` 等有效版本标签产生 |
 | `latest` | main 手动发布或无预发布后缀的版本标签发布时更新 |
 | `<镜像名>@sha256:<digest>` | 发布摘要记录在 Actions summary，可用于固定部署 |
 

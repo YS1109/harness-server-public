@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
-  <title>Harness · 空间管理</title>
+  <title>Harness · 管理工作台</title>
   <link rel="stylesheet" href="/admin/console.css">
   <script src="/admin/console.js" defer></script>
 </head>
@@ -19,8 +19,8 @@
   <section id="login-view" class="login-view" aria-labelledby="login-title">
     <form id="login-form" class="login-card" autocomplete="off">
       <span class="eyebrow">HARNESS CONSOLE</span>
-      <h1 id="login-title">让每个 Agent 各有所属</h1>
-      <p class="muted">统一查看知识空间，管理访问权限与默认空间。</p>
+      <h1 id="login-title">工作有迹可循</h1>
+      <p class="muted">查看服务运行与任务进展，管理知识空间和 Agent 授权。</p>
       <label for="admin-token">管理员令牌</label>
       <input id="admin-token" name="admin-token" type="password" required autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="输入管理员 Bearer token">
       <button id="login-submit" class="primary" type="submit">连接控制台</button>
@@ -30,7 +30,12 @@
   </section>
 
   <div id="workspace" class="workspace" hidden>
-    <aside class="sidebar" aria-label="空间导航">
+    <aside class="sidebar" aria-label="工作台导航">
+      <nav class="workspace-nav" aria-label="工作台视图">
+        <button id="nav-runtime" class="global-nav" type="button">运行概览</button>
+        <button id="nav-handoffs" class="global-nav" type="button">最近交接</button>
+        <button id="nav-executions" class="global-nav" type="button">执行任务</button>
+      </nav>
       <div class="sidebar-heading"><span>知识空间</span><button id="create-namespace" class="icon-button" type="button" aria-label="新建空间" title="新建空间">＋</button></div>
       <label class="sr-only" for="namespace-search">搜索空间</label>
       <input id="namespace-search" type="search" placeholder="搜索名称或 ID" autocomplete="off">
@@ -44,6 +49,32 @@
         <div><strong>写入结果尚未确认</strong><p id="pending-description"></p><p>重试将复用首次幂等键和完整请求。确认结果前，其他写操作已暂停。</p></div>
         <div class="button-row"><button id="retry-mutation" class="primary" type="button">重试原请求</button><button id="abandon-mutation" type="button">放弃重试</button></div>
       </div>
+      <section id="runtime-view" aria-labelledby="runtime-title" hidden>
+        <div class="page-heading"><div><span class="eyebrow">RUNTIME</span><h1 id="runtime-title">运行概览</h1><p class="muted">查看服务用量与资源成本。数据按需读取，磁盘容量需单独读取。</p></div></div>
+        <form id="runtime-filters" class="filters">
+          <div><label for="runtime-namespace">统计空间</label><select id="runtime-namespace"><option value="">全部空间（全局）</option></select></div>
+          <div><label for="runtime-days">统计窗口</label><select id="runtime-days"><option value="7">最近 7 天</option><option value="30" selected>最近 30 天</option><option value="90">最近 90 天</option></select></div>
+          <button type="submit">查询</button>
+        </form>
+        <p id="runtime-state" class="hint" role="status" aria-live="polite"></p>
+        <div id="runtime-content" aria-busy="false"></div>
+        <section class="runtime-section" aria-labelledby="storage-title"><div class="section-heading storage-heading"><div><h2 id="storage-title">磁盘容量（全局）</h2><p class="muted">按需扫描，服务缓存 30 秒；不随空间或统计窗口变化。</p></div><button id="read-storage" type="button">读取磁盘容量</button></div><p id="storage-state" class="hint" role="status" aria-live="polite"></p><div id="storage-content" aria-busy="false"></div></section>
+        <section class="runtime-section" aria-labelledby="routing-title"><h2 id="routing-title">最近路由评测</h2><p id="routing-state" class="hint" role="status" aria-live="polite"></p><div id="routing-content" aria-busy="false"></div></section>
+      </section>
+      <section id="browse-view" aria-labelledby="browse-title" hidden>
+        <div class="page-heading"><div><span id="browse-eyebrow" class="eyebrow">HANDOFFS</span><h1 id="browse-title">最近交接</h1><p id="browse-description" class="muted"></p></div></div>
+        <form id="browse-filters" class="filters">
+          <div><label for="browse-namespace">空间</label><select id="browse-namespace" required></select></div>
+          <div id="browse-kind-field"><label for="browse-kind">交接类型</label><select id="browse-kind"><option value="workstream">工作流（Workstream）</option><option value="session">会话（Session）</option></select></div>
+          <div class="search-field"><label for="browse-query">搜索</label><input id="browse-query" type="search" maxlength="200" placeholder="标题或路径" autocomplete="off"></div>
+          <div><label for="browse-project">项目 ID</label><input id="browse-project" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9\-]{0,127}" title="1–128 位小写字母、数字或连字符，不能以连字符开头" placeholder="全部项目，如 demo" autocomplete="off"></div>
+          <div><label for="browse-status">状态</label><select id="browse-status"></select></div>
+          <button id="browse-submit" type="submit">查询</button>
+        </form>
+        <p id="browse-state" class="hint" role="status" aria-live="polite"></p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="任务列表，可横向滚动"><table><caption id="browse-caption" class="sr-only">最近交接</caption><thead><tr><th scope="col">标题 / 标识</th><th id="browse-type-heading" scope="col">类型</th><th scope="col">项目 / 状态</th><th scope="col">更新时间</th></tr></thead><tbody id="browse-body"></tbody></table></div>
+        <div class="pagination"><span id="browse-page-label"></span><div class="button-row"><button id="browse-previous" type="button" disabled>上一页</button><button id="browse-next" type="button" disabled>下一页</button></div></div>
+      </section>
       <section id="namespace-view" hidden>
         <div class="page-heading"><div><div class="eyebrow">NAMESPACE</div><h1 id="namespace-title"></h1><p id="namespace-description" class="muted"></p><div class="heading-meta"><code id="namespace-id"></code><span id="namespace-status" class="badge"></span></div></div><button id="edit-namespace" type="button">编辑空间</button></div>
         <div id="counts" class="counts" aria-label="文档数量"></div>
@@ -53,9 +84,16 @@
           <button id="tab-audit" type="button" role="tab" aria-selected="false" aria-controls="panel-audit" tabindex="-1" data-tab="audit">操作记录</button>
         </div>
         <section id="panel-content" class="tab-panel" role="tabpanel" aria-labelledby="tab-content">
-          <form id="filters" class="filters"><div><label for="kind-filter">文档类型</label><select id="kind-filter"><option value="">全部类型</option><option value="project">项目</option><option value="project_topic">项目专题</option><option value="process">流程</option><option value="session">Session</option><option value="workstream">Workstream</option><option value="log">日志</option></select></div><div><label for="project-filter">项目 ID</label><input id="project-filter" type="text" placeholder="全部项目" autocomplete="off"></div><button type="submit">查询</button></form>
+          <form id="filters" class="filters">
+            <div class="search-field"><label for="query-filter">搜索内容</label><input id="query-filter" type="search" maxlength="200" placeholder="标题或路径" autocomplete="off"></div>
+            <div><label for="kind-filter">文档类型</label><select id="kind-filter"><option value="">全部类型</option><option value="project">项目</option><option value="project_topic">项目专题</option><option value="process">流程</option><option value="template">模板</option><option value="session">会话（Session）</option><option value="workstream">工作流（Workstream）</option><option value="log">日志</option></select></div>
+            <div><label for="project-filter">项目 ID</label><input id="project-filter" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9\-]{0,127}" title="1–128 位小写字母、数字或连字符，不能以连字符开头" placeholder="全部项目，如 demo" autocomplete="off"></div>
+            <div><label for="status-filter">状态</label><select id="status-filter"></select></div>
+            <div><label for="sort-filter">排序</label><select id="sort-filter"><option value="path">路径顺序</option><option value="updated_desc">最近更新优先</option></select></div>
+            <button type="submit">查询</button>
+          </form>
           <div id="documents-state" class="hint" role="status" aria-live="polite"></div>
-          <div class="table-wrap"><table><caption class="sr-only">空间文档</caption><thead><tr><th scope="col">文档</th><th scope="col">类型</th><th scope="col">项目 / 状态</th><th scope="col">更新时间</th></tr></thead><tbody id="documents-body"></tbody></table></div>
+          <div class="table-wrap" tabindex="0" role="region" aria-label="空间文档，可横向滚动"><table><caption class="sr-only">空间文档</caption><thead><tr><th scope="col">文档</th><th scope="col">类型</th><th scope="col">项目 / 状态</th><th scope="col">更新时间</th></tr></thead><tbody id="documents-body"></tbody></table></div>
           <div class="pagination"><span id="page-label"></span><div class="button-row"><button id="previous-page" type="button">上一页</button><button id="next-page" type="button">下一页</button></div></div>
         </section>
         <section id="panel-members" class="tab-panel" role="tabpanel" aria-labelledby="tab-members" hidden><div class="section-heading"><h2>空间成员</h2><p class="muted">权限由 Agent 的空间授权决定，可在下方打开 Agent 编辑。</p></div><div class="table-wrap"><table><caption class="sr-only">空间成员权限</caption><thead><tr><th scope="col">Agent</th><th scope="col">读取</th><th scope="col">写入</th><th scope="col">管理</th></tr></thead><tbody id="members-body"></tbody></table></div></section>
@@ -70,6 +108,6 @@
 
   <dialog id="agent-dialog" class="wide-dialog" aria-labelledby="agent-dialog-title"><form id="agent-form"><div class="dialog-heading"><div><span class="eyebrow">AGENT ACCESS</span><h2 id="agent-dialog-title">编辑 Agent</h2></div><button class="icon-button" type="button" data-close="agent-dialog" aria-label="关闭">×</button></div><p id="agent-identity" class="muted"></p><label for="agent-name">显示名称</label><input id="agent-name" type="text" required maxlength="80" autocomplete="off"><fieldset><legend>空间授权</legend><p class="hint">可授权多个空间；默认读取必须属于读取授权，默认写入必须属于写入授权。</p><div class="table-wrap"><table><caption class="sr-only">Agent 空间授权</caption><thead><tr><th scope="col">空间</th><th scope="col">读取</th><th scope="col">写入</th><th scope="col">默认读取</th></tr></thead><tbody id="agent-grants"></tbody></table></div></fieldset><label for="agent-default-write">默认写入空间</label><select id="agent-default-write"></select><p id="agent-unsaved" class="unsaved" hidden>有未保存的修改</p><p id="agent-form-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-close="agent-dialog">取消</button><button id="agent-save" type="submit" class="primary">保存权限</button></div></form></dialog>
 
-  <dialog id="preview-dialog" class="preview-dialog" aria-labelledby="preview-title"><div class="dialog-heading"><h2 id="preview-title">文档预览</h2><button class="icon-button" type="button" data-close="preview-dialog" aria-label="关闭预览">×</button></div><p id="preview-path" class="mono muted"></p><p id="preview-sha" class="mono hint"></p><p class="hint">只读 Markdown 原文</p><pre id="preview-content" tabindex="0"></pre></dialog>
+  <dialog id="preview-dialog" class="preview-dialog" aria-labelledby="preview-title"><div class="dialog-heading"><h2 id="preview-title">文档预览</h2><button class="icon-button" type="button" data-close="preview-dialog" aria-label="关闭预览">×</button></div><p id="preview-path" class="mono muted"></p><p id="preview-sha" class="mono hint"></p><p id="preview-note" class="hint">只读 Markdown 原文</p><p id="preview-state" class="hint" role="status" aria-live="polite"></p><div id="execution-detail" hidden></div><details id="preview-raw"><summary>原始 JSON（只读）</summary><pre id="preview-content" tabindex="0"></pre></details></dialog>
 </body>
 </html>

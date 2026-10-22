@@ -438,7 +438,7 @@ pub fn list(docs: &Documents, v: &Value) -> Result<Value> {
     if !kind.is_empty()
         && !matches!(
             kind,
-            "project" | "project_topic" | "process" | "session" | "workstream" | "log"
+            "project" | "project_topic" | "process" | "template" | "session" | "workstream" | "log"
         )
     {
         return Err(invalid("kind无效"));
@@ -472,6 +472,23 @@ pub fn list(docs: &Documents, v: &Value) -> Result<Value> {
             }
             continue;
         }
+        if actual == "template" {
+            if project.is_none() {
+                let title: String = content
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("# ")
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                    })
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path))
+                    .chars()
+                    .take(160)
+                    .collect();
+                rows.push(json!({"path":path,"kind":actual,"sha256":sha(content),"title":title}));
+            }
+            continue;
+        }
         let (m, _) = parse(content)?;
         let owner = if string(&m, "project").is_empty() {
             string(&m, "project_id")
@@ -484,6 +501,36 @@ pub fn list(docs: &Documents, v: &Value) -> Result<Value> {
             continue;
         }
         rows.push(json!({"path":path,"kind":actual,"sha256":sha(content),"title":string(&m,"title"),"project":owner,"status":string(&m,"status"),"updated_at":string(&m,"updated_at"),"session_id":string(&m,"session_id"),"workstream_id":string(&m,"workstream_id")}));
+    }
+    let query = text(v, "q").to_lowercase();
+    if query.chars().count() > 200 {
+        return Err(invalid("搜索词超过200字"));
+    }
+    let status = text(v, "status");
+    rows.retain(|r| {
+        (status.is_empty() || r["status"].as_str() == Some(status))
+            && (query.is_empty()
+                || format!(
+                    "{} {}",
+                    r["title"].as_str().unwrap_or(""),
+                    r["path"].as_str().unwrap_or("")
+                )
+                .to_lowercase()
+                .contains(&query))
+    });
+    match text(v, "sort") {
+        "" | "path" => {}
+        "updated_desc" => rows.sort_by(|a, b| {
+            let time = |v: &Value| {
+                chrono::DateTime::parse_from_rfc3339(v["updated_at"].as_str().unwrap_or(""))
+                    .ok()
+                    .map(|t| t.timestamp_millis())
+            };
+            time(b)
+                .cmp(&time(a))
+                .then(a["path"].as_str().cmp(&b["path"].as_str()))
+        }),
+        _ => return Err(invalid("sort必须为path或updated_desc")),
     }
     let total = rows.len();
     let rows: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
@@ -503,7 +550,11 @@ pub fn put(state: &mut State, v: &Value) -> Result<Value> {
     }
     check_hash(&state.documents, path, text(v, "expected_sha256"))?;
     validate(path, content)?;
-    if let Some(old) = state.documents.get(path) {
+    if let Some(old) = state
+        .documents
+        .get(path)
+        .filter(|_| path_kind(path).ok() != Some("template"))
+    {
         let (a, _) = parse(old)?;
         let (b, _) = parse(content)?;
         for key in [
@@ -816,6 +867,7 @@ pub fn finish(state: &mut State, v: &Value) -> Result<Value> {
         ],
     )?;
     let r = v.get("result").ok_or_else(|| invalid("缺少result"))?;
+    crate::result_schema::validate(r)?;
     fields(
         r,
         &[
@@ -944,8 +996,9 @@ pub fn abort(state: &mut State, v: &Value) -> Result<Value> {
     state.documents.remove(&path);
     let used = state
         .documents
-        .values()
-        .filter_map(|c| parse(c).ok())
+        .iter()
+        .filter(|(p, _)| path_kind(p).ok() == Some("session"))
+        .filter_map(|(_, c)| parse(c).ok())
         .any(|(m, _)| m.contains_key("session_id") && string(&m, "workstream_id") == ws);
     if !used && let Some(path) = find(&state.documents, "workstream_id", &ws)? {
         let (m, _) = parse(&state.documents[&path])?;

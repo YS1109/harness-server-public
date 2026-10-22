@@ -302,6 +302,8 @@ struct List {
     project: Option<String>,
     status: Option<String>,
     active_only: bool,
+    q: Option<String>,
+    sort: Option<String>,
     limit: usize,
     offset: usize,
 }
@@ -312,6 +314,8 @@ impl Default for List {
             project: None,
             status: None,
             active_only: false,
+            q: None,
+            sort: None,
             limit: 20,
             offset: 0,
         }
@@ -348,10 +352,37 @@ pub fn list(docs: &Documents, v: &Value) -> Result<Value> {
         }
         tasks.push(json!({"task_id":t.task_id,"conversation_id":t.conversation_id,"project":t.project,"parent_task_id":t.parent_task_id,"title":t.title,"status":t.status,"current":t.current,"current_attempt_id":t.current_attempt_id,"cancel_requested":t.cancel_requested,"delivery_status":t.delivery_status,"updated_at":t.updated_at,"version":t.version,"sha256":sha(&docs[p])}));
     }
+    let query = q.q.as_deref().unwrap_or("").to_lowercase();
+    if query.chars().count() > 200 {
+        return Err(invalid("搜索词超过200字"));
+    }
+    tasks.retain(|t| {
+        query.is_empty()
+            || format!(
+                "{} {}",
+                t["title"].as_str().unwrap_or(""),
+                t["task_id"].as_str().unwrap_or("")
+            )
+            .to_lowercase()
+            .contains(&query)
+    });
+    let order = match q.sort.as_deref().unwrap_or("task_id") {
+        "task_id" => "task_id ascending",
+        "updated_desc" => {
+            tasks.sort_by(|a, b| {
+                b["updated_at"]
+                    .as_str()
+                    .cmp(&a["updated_at"].as_str())
+                    .then(a["task_id"].as_str().cmp(&b["task_id"].as_str()))
+            });
+            "updated_at descending"
+        }
+        _ => return Err(invalid("sort必须为task_id或updated_desc")),
+    };
     let total = tasks.len();
     let items: Vec<_> = tasks.into_iter().skip(q.offset).take(q.limit).collect();
     Ok(
-        json!({"tasks":items,"total":total,"offset":q.offset,"remaining":total.saturating_sub(q.offset.saturating_add(items.len())),"order":"task_id ascending"}),
+        json!({"tasks":items,"total":total,"offset":q.offset,"remaining":total.saturating_sub(q.offset.saturating_add(items.len())),"order":order}),
     )
 }
 #[derive(Deserialize)]

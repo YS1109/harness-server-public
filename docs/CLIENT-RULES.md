@@ -42,3 +42,7 @@ SHA 来自实际写入目标，设备覆盖版本不能用来更新 shared。操
 先验证新客户端 instructions、health、namespaces 和一次实际项目读取，再切换全局短入口；原二进制、入口和配置先备份。客户端规则不产生管理授权、不修改服务默认值、不搬迁已有 Session 或长期记忆。回退旧客户端时恢复原全局规则，避免旧版本没有 instructions 命令。
 
 本版源码与本机安装不等于 GitHub Release/镜像已经发布；发布需沿用版本标签和五平台工作流。
+
+## v0.4调用减负
+
+连续任务按完整阶段start/finish，不按每次中间回复重复执行。已知跟踪需求直接start --content；复用已返回的正文/来源/SHA，冲突再扩读，不在保存后例行get。setup/connect/doctor仅用于接入和排错。stdin提交、scope简写、单请求写入与统计口径见[运行指南](OPERATIONS.md)。

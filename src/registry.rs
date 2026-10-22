@@ -323,7 +323,7 @@ pub fn discovery(docs: &Documents, p: &Principal) -> Result<Value> {
         spaces.push(json!({"id":s.id,"name":s.name,"description":s.description,"status":s.status,"read":true,"write":a.write_namespaces.contains(ns)&&s.status=="ACTIVE"}));
     }
     Ok(
-        json!({"agent_id":p.agent_id,"namespaces":spaces,"default_read_namespaces":a.default_read_namespaces,"default_write_namespace":a.default_write_namespace,"registry_version":1}),
+        json!({"agent_id":p.agent_id,"namespaces":spaces,"default_read_namespaces":a.default_read_namespaces,"default_write_namespace":a.default_write_namespace,"registry_version":1,"write_protocols":["v1","scoped-v2"]}),
     )
 }
 fn current_hash(docs: &Documents, p: &str, expected: &str) -> Result<()> {

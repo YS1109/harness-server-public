@@ -18,20 +18,20 @@ macOS 用 `uname -m` 区分 `arm64` / `x86_64`，Linux 的 `aarch64` 选 ARM64�
 
 ## 校验并解压
 
-只下载一款时，先找到 `SHA256SUMS` 内对应文件名的一行，与本机计算值比较：
+下面以已发布v0.3.2为例；其他版本替换文件名中的版本。只下载一款时，先找到 `SHA256SUMS` 内对应文件名的一行，与本机计算值比较：
 
 ```sh
 # macOS
-shasum -a 256 harness-v0.1.0-macos-arm64.tar.gz
+shasum -a 256 harness-v0.3.2-macos-arm64.tar.gz
 # Linux
-sha256sum harness-v0.1.0-linux-x64.tar.gz
+sha256sum harness-v0.3.2-linux-x64.tar.gz
 ```
 
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\harness-v0.1.0-windows-x64.zip -Algorithm SHA256
-Expand-Archive .\harness-v0.1.0-windows-x64.zip -DestinationPath .\harness-client
+Get-FileHash .\harness-v0.3.2-windows-x64.zip -Algorithm SHA256
+Expand-Archive .\harness-v0.3.2-windows-x64.zip -DestinationPath .\harness-client
 ```
 
 Unix 使用 `tar -xzf <包名>` 解压。包内只有 `harness`（Windows 是 `harness.exe`）、本引导和无凭据的 `client.example.json`。

@@ -81,6 +81,12 @@ h2 {
   font-size:18px;
   margin-bottom:8px;
 }
+h3 {
+  font-size:12px;
+  font-weight:550;
+  color:var(--muted);
+  margin:0 0 12px;
+}
 p {
   line-height:1.65;
 }
@@ -312,6 +318,15 @@ label {
   text-align:left;
   border:0;
 }
+.workspace-nav {
+  display:grid;
+  gap:5px;
+  border-bottom:1px solid var(--line);
+  padding-bottom:17px;
+}
+.global-nav[aria-current="page"] {
+  font-weight:650;
+}
 .global-nav span {
   float:right;
   color:var(--muted);
@@ -436,6 +451,18 @@ label {
 .filters input {
   width:200px;
 }
+.filters .search-field {
+  flex:1 1 220px;
+}
+.filters .search-field input {
+  width:100%;
+}
+.filters select {
+  max-width:100%;
+}
+.filters>div {
+  min-width:0;
+}
 .filters button {
   padding:10px 19px;
 }
@@ -478,6 +505,65 @@ td .text-link {
   padding:0;
   text-align:left;
   font-weight:550;
+}
+.time-cell {
+  font-size:12px;
+  min-width:150px;
+  font-variant-numeric:tabular-nums;
+}
+.task-goal {
+  max-width:440px;
+  white-space:pre-wrap;
+}
+.runtime-meta {
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px 24px;
+  color:var(--muted);
+  font-size:12px;
+  margin-bottom:28px;
+}
+.metric-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:14px;
+  margin:16px 0 28px;
+}
+.metric-card {
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:9px;
+  padding:20px;
+  min-width:0;
+}
+.metric-card strong {
+  display:block;
+  font-size:24px;
+  font-weight:600;
+  font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;
+}
+.metric-card p {
+  margin:9px 0 0;
+}
+.runtime-breakdowns {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:22px;
+  margin:28px 0;
+}
+.info-box p {
+  margin:8px 0 0;
+}
+.scope-note {
+  font-size:12px;
+  overflow-wrap:anywhere;
+}
+.revision-note {
+  overflow-wrap:anywhere;
+}
+[aria-busy="true"] {
+  opacity:.65;
 }
 .text-link {
   border:0;
@@ -764,6 +850,16 @@ fieldset label {
     max-height:180px;
     overflow:auto;
   }
+  .workspace-nav {
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:5px;
+    padding-bottom:12px;
+  }
+  .workspace-nav button {
+    padding:10px 5px;
+    text-align:center;
+    font-size:13px;
+  }
   .namespace-item {
     padding:8px;
   }
@@ -798,6 +894,32 @@ fieldset label {
   .filters select {
     min-width:130px;
   }
+  .filters>div {
+    flex:1 1 140px;
+  }
+  .filters input,.filters select {
+    width:100%;
+    min-width:0;
+  }
+  .filters .search-field {
+    flex-basis:100%;
+  }
+  .metric-grid {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:10px;
+  }
+  .metric-card {
+    padding:15px;
+  }
+  .metric-card strong {
+    font-size:21px;
+  }
+  .runtime-breakdowns {
+    grid-template-columns:1fr;
+  }
+  #documents-body td:first-child,#browse-body td:first-child {
+    min-width:180px;
+  }
   .pagination {
     align-items:flex-start;
   }
@@ -816,4 +938,40 @@ fieldset label {
   .agent-grid {
     grid-template-columns:1fr;
   }
+}
+
+.runtime-section {
+  margin-top:32px;
+  padding-top:24px;
+  border-top:1px solid var(--line);
+}
+.storage-heading {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  flex-wrap:wrap;
+}
+.execution-fields {
+  display:grid;
+  grid-template-columns:minmax(90px,auto) minmax(0,1fr);
+  gap:10px 20px;
+  font-size:13px;
+  line-height:1.65;
+}
+.execution-fields dt { color:var(--muted); }
+.execution-fields dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.checkpoint { margin:18px 0; }
+.checkpoint h3 { margin:16px 0 7px; }
+.checkpoint li { white-space:pre-wrap; overflow-wrap:anywhere; margin-bottom:6px; }
+.attempt-timeline { padding-left:24px; }
+.attempt-timeline>li { border-left:2px solid var(--line); padding:8px 0 20px 16px; }
+.attempt-timeline h3 { font-size:14px; color:var(--ink); }
+#execution-detail h2 { margin-top:24px; }
+.preview-dialog summary { cursor:pointer; line-height:1.7; }
+.document-raw>summary { display:none; }
+@media(max-width:620px) {
+  .execution-fields { grid-template-columns:1fr; gap:4px; }
+  .execution-fields dd { margin-bottom:10px; }
+  .attempt-timeline { padding-left:18px; }
 }

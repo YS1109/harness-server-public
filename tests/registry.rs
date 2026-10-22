@@ -726,7 +726,37 @@ async fn cached_start_receipts_cannot_return_revoked_memory() {
         .0,
         StatusCode::OK
     );
+    assert_eq!(
+        call(
+            &app,
+            TOKEN,
+            "POST",
+            "/v2/scoped/start",
+            start.clone(),
+            None,
+            None,
+            Some("cached")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
     grant(&app, &[&a], &[&a], &[&a], Some(&a)).await;
+    assert_eq!(
+        call(
+            &app,
+            TOKEN,
+            "POST",
+            "/v2/scoped/start",
+            start.clone(),
+            None,
+            None,
+            Some("cached")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         call(
             &app,

@@ -378,7 +378,7 @@ async fn scoped_client_propagates_identity_and_rejects_unscoped_server_before_wr
     .unwrap();
     tokio::task::spawn_blocking(move || {
         let o = client(&config)
-            .env("HARNESS_TOKEN", token)
+            .env("HARNESS_TOKEN", &token)
             .args([
                 "start",
                 "--agent",
@@ -394,6 +394,27 @@ async fn scoped_client_propagates_identity_and_rejects_unscoped_server_before_wr
             .unwrap();
         assert!(!o.status.success());
         assert!(String::from_utf8_lossy(&o.stderr).contains("write not sent"));
+        let o = client(&config)
+            .env("HARNESS_TOKEN", &token)
+            .args([
+                "--timings",
+                "--write-protocol",
+                "scoped-v2",
+                "start",
+                "--agent",
+                "pi",
+                "--native-session-id",
+                "native-fast",
+                "--project",
+                "demo",
+                "--title",
+                "Old server fast",
+            ])
+            .output()
+            .unwrap();
+        assert!(!o.status.success());
+        assert!(String::from_utf8_lossy(&o.stderr).contains("404"));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("\"http_requests\":1"));
     })
     .await
     .unwrap();

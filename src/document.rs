@@ -1,4 +1,4 @@
-use crate::error::{Result, invalid};
+use crate::error::{Error, Result, invalid};
 use regex::Regex;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -43,6 +43,7 @@ pub fn path_kind(path: &str) -> Result<&'static str> {
         ["memory", "project", _] => "project",
         ["memory", "project", _, _] => "project_topic",
         ["memory", "process", _] => "process",
+        ["memory", "templates", _] => "template",
         ["memory", "logs", file] if Regex::new(r"^\d{4}-\d{2}\.md$").unwrap().is_match(file) => {
             "log"
         }
@@ -51,7 +52,7 @@ pub fn path_kind(path: &str) -> Result<&'static str> {
         ["executions", "tasks", _] => "execution_task",
         ["executions", "attempts", _] => "execution_attempt",
         ["executions", "contexts", _] => "execution_context",
-        _ => return Err(invalid("仅接受受管记忆、交接和月度日志相对路径")),
+        _ => return Err(invalid("仅接受受管记忆、模板、交接和月度日志相对路径")),
     };
     if kind != "log" && kind != "control_audit" {
         slug(
@@ -118,6 +119,15 @@ pub fn validate(path: &str, content: &str) -> Result<()> {
     if kind == "log" {
         return Ok(());
     }
+    // Templates are raw Markdown resources, not YAML memory cards. Keep their
+    // full skeleton intact under the existing 256KiB resource cap, without
+    // inheriting the 2,000-character process-card budget.
+    if kind == "template" {
+        if content.trim().is_empty() || content.contains('\0') {
+            return Err(invalid("模板必须是非空Markdown文本，不接受NUL"));
+        }
+        return Ok(());
+    }
     if kind.starts_with("execution_") {
         return crate::execution::validate_document(path, content);
     }
@@ -129,7 +139,12 @@ pub fn validate(path: &str, content: &str) -> Result<()> {
         _ => 2000,
     };
     if body.chars().count() > budget {
-        return Err(invalid(format!("{kind}正文超过{budget}字，不自动截断")));
+        return Err(Error::Budget {
+            kind: kind.to_owned(),
+            path: path.to_owned(),
+            actual: body.chars().count(),
+            limit: budget,
+        });
     }
     if m.get("schema_version").and_then(Value::as_u64) != Some(1) || string(&m, "title").is_empty()
     {
@@ -245,7 +260,7 @@ fn validate_namespace(docs: &Documents) -> Result<()> {
     let mut identities = std::collections::BTreeSet::new();
     for (p, c) in docs {
         let kind = path_kind(p)?;
-        if kind == "log" {
+        if matches!(kind, "log" | "template") {
             continue;
         }
         let (m, _) = parse(c)?;
@@ -283,7 +298,7 @@ pub fn find(docs: &Documents, key: &str, id: &str) -> Result<Option<String>> {
     let mut result = None;
     for (p, c) in docs {
         let kind = path_kind(p)?;
-        if kind == "log"
+        if matches!(kind, "log" | "template")
             || (key == "workstream_id" && kind != "workstream")
             || (key == "session_id" && kind != "session")
         {

@@ -16,6 +16,7 @@ pub struct Principal {
 
 #[derive(Clone)]
 pub struct Access {
+    pub protocol: String,
     pub agent_id: Option<String>,
     pub namespace: String,
     pub inherit_shared: bool,
@@ -144,6 +145,7 @@ pub fn authorize(
         return Err(Error::Forbidden("凭据未获当前namespace的访问权限".into()));
     }
     Ok(Some(Access {
+        protocol: "v1".into(),
         legacy_shared: namespace == "shared" && agent_id.is_none(),
         read_namespaces: vec![namespace.into()],
         namespace_explicit: true,

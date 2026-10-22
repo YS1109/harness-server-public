@@ -30,6 +30,7 @@ struct Manifest {
     receipts: BTreeMap<String, Receipt>,
 }
 pub struct Store {
+    pub last_commit_ms: Option<f64>,
     root: PathBuf,
     pub state: State,
     pub revision: Option<String>,
@@ -115,18 +116,64 @@ impl Store {
             revision = Some(id.trim().to_owned());
         }
         Ok(Self {
+            last_commit_ms: None,
             root,
             state,
             revision,
             _lock: f,
         })
     }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// In-memory counts; callers can release the store mutex before scanning disk.
+    pub fn usage_snapshot(&self) -> Value {
+        serde_json::json!({"documents":self.state.documents.len(),"document_bytes":self.state.documents.values().map(String::len).sum::<usize>(),"receipts":self.state.receipts.len(),"revision":self.revision,"document_limit":4096,"document_bytes_limit":32*1024*1024,"maintenance":"只读统计；未执行GC或删除幂等回执"})
+    }
+    /// Explicit read-only maintenance report; never runs on the write path.
+    pub fn usage(&self) -> Result<Value> {
+        let mut result = self.usage_snapshot();
+        result
+            .as_object_mut()
+            .unwrap()
+            .extend(Self::disk_usage(&self.root)?.as_object().unwrap().clone());
+        Ok(result)
+    }
+    /// Approximate live disk usage; does not require the business store mutex.
+    pub fn disk_usage(root: &Path) -> Result<Value> {
+        fn scan(path: &Path) -> std::io::Result<u64> {
+            let mut size = 0;
+            for entry in fs::read_dir(path)? {
+                let e = entry?;
+                let kind = e.file_type()?;
+                if kind.is_symlink() {
+                    continue;
+                }
+                size += if kind.is_dir() {
+                    scan(&e.path())?
+                } else {
+                    e.metadata()?.len()
+                };
+            }
+            Ok(size)
+        }
+        let revisions = fs::read_dir(root.join("revisions"))?
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .count();
+        Ok(
+            serde_json::json!({"revisions":revisions,"disk_bytes":scan(&root.join("revisions"))?,"disk_scope":"全局实时近似值，扫描不占业务锁，可能包含正在写入的修订"}),
+        )
+    }
+
     pub fn transact(
         &mut self,
         key: &str,
         request: &Value,
         operation: impl FnOnce(&mut State) -> Result<Value>,
     ) -> Result<Value> {
+        self.last_commit_ms = None;
         if key.is_empty()
             || key.len() > 128
             || !key
@@ -158,7 +205,10 @@ impl Store {
                 response: response.clone(),
             },
         );
-        self.commit(next)?;
+        let commit_started = std::time::Instant::now();
+        let committed = self.commit(next);
+        self.last_commit_ms = Some(commit_started.elapsed().as_secs_f64() * 1000.0);
+        committed?;
         Ok(response)
     }
     pub fn import(&mut self, documents: Documents) -> Result<()> {
@@ -252,6 +302,7 @@ pub fn import_directory(source: &Path) -> Result<Documents> {
         "namespaces",
         "memory/project",
         "memory/process",
+        "memory/templates",
         "memory/logs",
         "handoffs/sessions",
         "handoffs/workstreams",
