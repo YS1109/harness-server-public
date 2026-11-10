@@ -1,10 +1,26 @@
 # Harness Server
 
-Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.4.1**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
+Rust 原生 Harness HTTP 服务和客户端，当前源码包版本 **0.6.0**，edition **2024**，最低 Rust **1.88**，HTTP 框架为 axum **0.8**。服务二进制为 `harness-server`，客户端为 `harness`。本公开仓库从干净源码快照开始，不包含旧仓库的提交、发布标签或产物；安装包见 [Releases](https://github.com/YS1109/harness-server-public/releases)，镜像发布状态见 [Actions](https://github.com/YS1109/harness-server-public/actions/workflows/publish-image.yml)。
 
 服务集中存储 Markdown，客户端通过 HTTP 路由记忆、维护 Session/Workstream 和提交结果。本版使用 Rust 引擎，不执行原 agent-home Python 引擎。**v1 是有限协议，不承诺兼容旧 Python 的全部 flags、字段或行为。**
 
 QQ 机器人 / Pi 主 Agent 可通过独立执行记录API持久化调度摘要、任务/尝试状态和执行中检查点，支持来源消息去重、条件领取、重启读取及独立的结果回复状态。把 [Pi执行记录接入指南](docs/PI-EXECUTION-INTEGRATION.md) 交给机器人代码的Agent集成；设计与后续边界见 [执行记录设计](docs/EXECUTION-RECORDS.md)。服务不执行任务或自动重派，真实QQ/Pi接入尚未验证。
+
+## v0.6 首次接入、后台登录与多租户
+
+首次配置客户端时展示服务已授权的空间，选择默认写入空间及读取范围并保存；已有明确选择保持不变，非交互机器人通过参数完成配置。租户通过`--tenant`选择；租户选择不会产生访问权限，空间授权仍由对应租户核验。
+
+后台支持账号密码及“记住登录”，刷新后通过HttpOnly会话Cookie恢复；密码只保存Argon2id哈希，Agent仍使用独立token。管理员token保留为兼容API和可选登录方式，不保存到浏览器存储。用`harness-server hash-password`隐藏输入生成部署用哈希；账号配置、有效期及HTTPS要求见[后台登录](docs/ADMIN-LOGIN.md)。
+
+多租户模式显式配置后启用，各租户拥有独立Markdown存储、namespace目录、授权、幂等回执、统计和评测；`shared`也只在本租户内共享。既有单租户启动方式继续可用，不自动迁移旧数据或开放注册。创建租户、接入、备份和迁移边界见[多租户指南](docs/MULTI-TENANCY.md)。本地源码、发布、客户端安装与生产部署仍分别验收。
+
+## v0.5 文档管理、检索诊断与模板检查
+
+`/admin` 新增跨空间知识文档列表、原空间编辑、完整保存预览、差异确认及记忆归档/恢复。预览复用真实引擎重建索引并检查全部预算和关联；保存仍使用最新SHA、持久幂等和原子事务。冲突保留草稿供手动合并，未知结果保留原请求重试。交接、日志与执行记录使用专用流程；原文模板没有状态字段。操作范围和API见[知识文档管理](docs/KNOWLEDGE-MANAGEMENT.md)。
+
+检索诊断页面及 `route --explain` 按需返回有界排序依据。明确标为“只是背景”等的子句不参与主题竞争，其他检索语义保留。`--purpose task|maintenance|diagnostic` 可标记已有调用，`stats --purpose maintenance` 可筛选；未标注及旧数据保持 `unlabelled`，后台文档保存计为维护。日常任务不增加步骤或统计调用。
+
+`check-template` 显式检查标题层级、表头和checklist；支持从“模板结构”中的Markdown代码块提取骨架、替换标题占位符，本地文件模式无需凭据或网络。后台可从模板预览进入结构检查。结果只代表结构，不能证明内容正确；见[模板检查](docs/TEMPLATE-CHECK.md)。源码、Release、客户端安装和云端部署分别验收，版本号不会自动升级已有运行环境。
 
 ## v0.4 易用性与运行工作台
 

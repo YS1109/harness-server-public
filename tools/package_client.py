@@ -53,7 +53,7 @@ def smoke(binary, ver):
     # Isolate from the runner's configuration and credentials. The temporary
     # HTTP fixture checks the extracted executable, not an unarchived build.
     env = os.environ.copy()
-    for key in ("HARNESS_CLIENT_CONFIG", "HARNESS_URL", "HARNESS_TOKEN", "HARNESS_AGENT_ID", "HARNESS_NAMESPACE", "HARNESS_READ_NAMESPACES"):
+    for key in ("HARNESS_CLIENT_CONFIG", "HARNESS_URL", "HARNESS_TOKEN", "HARNESS_AGENT_ID", "HARNESS_NAMESPACE", "HARNESS_READ_NAMESPACES", "HARNESS_TENANT"):
         env.pop(key, None)
     with tempfile.TemporaryDirectory() as tmp:
         config = Path(tmp) / "client.json"

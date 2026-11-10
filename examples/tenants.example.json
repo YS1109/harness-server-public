@@ -1,0 +1,18 @@
+{
+  "tenants": [
+    {
+      "id": "acme",
+      "auth_config": "auth.example.json",
+      "admin_token_env": "HARNESS_ACME_ADMIN_TOKEN",
+      "admin_username": "acme-admin",
+      "admin_password_hash_env": "HARNESS_ACME_ADMIN_PASSWORD_HASH"
+    },
+    {
+      "id": "personal",
+      "token_env": "HARNESS_PERSONAL_AGENT_TOKEN",
+      "admin_token_env": "HARNESS_PERSONAL_ADMIN_TOKEN",
+      "admin_username": "personal-admin",
+      "admin_password_hash_env": "HARNESS_PERSONAL_ADMIN_PASSWORD_HASH"
+    }
+  ]
+}

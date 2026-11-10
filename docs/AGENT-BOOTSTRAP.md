@@ -1,12 +1,12 @@
 # Agent 接入
 
-部署后，每台可信设备使用同一个 HTTPS 服务地址、自己的 Bearer token 和本机项目目录映射。v0.3通过服务管理页面为稳定Agent配置多空间授权和默认范围；旧模式共享全部shared文档。namespace内仍无项目级权限隔离。服务不执行代码，不替代各项目的 AGENTS.md，也不提供原 Python CLI 的完全兼容层。
+部署后，每台可信设备使用 HTTPS 服务地址、自己的 Bearer token 和本机项目目录映射。通过服务管理页面为稳定Agent配置多空间授权和默认范围；旧模式共享本租户shared文档。v0.6可显式配置多租户，各租户独立存储与鉴权，客户端每租户使用独立配置；租户选择不授予权限，namespace内仍无项目级权限隔离。服务不执行代码，不替代各项目的 AGENTS.md，也不提供原 Python CLI 的完全兼容层。
 
 首次配置交给 [AI 配置引导](AI-SETUP.md)。本机默认使用 `http://localhost:8080`，无需设置 URL；连接另一台机器时显式配置 HTTPS 地址。镜像发布与拉取见 [镜像说明](IMAGES.md)。
 
 从 GitHub Release 下载本机平台客户端，校验并按包内 `INSTALL.md` 安装；源码方式仍可用 `cargo install --path . --locked --bin harness`。配置 `HARNESS_URL`、token 环境变量及客户端 JSON 后，先用 `harness health` 验证。也可直接使用 HTTP JSON API。原 Agent Home 规则不会自动修改；确认服务可用并完成离线导入后，将其生命周期调用入口替换为下面的约定，避免同时向本地与远端保存。
 
-身份与空间配置按[Agent身份与namespace](AGENT-NAMESPACES.md)执行。首次初始化只生成一次Agent ID或使用用户自定义ID，不生成namespace；管理员在服务端创建空间并授权，namespaces/connect核验接入，不每个对话重新初始化；实际连接和授权验证通过前不切换旧入口。
+身份与空间配置按[Agent身份与namespace](AGENT-NAMESPACES.md)执行。首次初始化只生成一次Agent ID或使用用户自定义ID，不生成namespace；管理员在服务端创建空间并授权，setup/connect一次展示、核验并保存本机默认选择，不每个对话重新初始化或重复发现。非交互且多个可写空间时返回候选，明确选择后再接入；见[首次接入](CLIENT-SETUP.md)。实际连接和授权验证通过前不切换旧入口。
 
 ## 客户端内置规则与全局短入口
 

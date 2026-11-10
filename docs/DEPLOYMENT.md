@@ -1,8 +1,10 @@
-# Harness v0.3 部署与使用
+# Harness 部署与使用
 
-适用于 Rust 原生 `harness-server` / `harness` 0.1.0。Linux 服务器使用 Docker Engine + Compose v2；macOS 本地使用 Docker Desktop + Compose v2。直接编译需要 Rust 1.88 或更高版本及完整源码中的 `Cargo.lock`。以下 Linux 路径为示例，须替换为实际路径。
+适用于Rust原生`harness-server` / `harness`；当前源码0.6.0。Linux服务器使用Docker Engine + Compose v2；macOS本地使用Docker Desktop + Compose v2。直接编译需要Rust1.88或更高版本及完整源码中的`Cargo.lock`。以下Linux路径为示例，须替换为实际路径。
 
 默认本地域名为 `localhost`，客户端未配置地址时连接 `http://localhost:8080`。AI 引导配置见 [AI-SETUP.md](AI-SETUP.md)。下面是源码构建入口；首次成功发布 GHCR 镜像后，也可使用 [compose.image.yaml](../compose.image.yaml) 直接拉取部署，步骤见 [IMAGES.md](IMAGES.md)。
+
+以下为保留的单租户部署方式。v0.6账号密码及记住登录配置见[后台登录](ADMIN-LOGIN.md)；可选多租户配置与独立数据根见[多租户指南](MULTI-TENANCY.md)。选择租户模式须明确安排旧数据迁移，不能直接切换配置后把空租户当作原数据丢失，也不应对多租户总目录运行单Store备份。
 
 ## 1. 配置 token 与启动
 
@@ -77,11 +79,12 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Authorization $http_authorization;
         proxy_set_header Idempotency-Key $http_idempotency_key;
+        proxy_set_header X-Harness-Tenant $http_x_harness_tenant;
     }
 }
 ```
 
-代理必须保留 `Authorization` 和 `Idempotency-Key`。不要记录 Bearer 头，也不要对 POST/PUT 自动改写请求体或重试为新 key；客户端超时后应按原 key 重试原请求。按实际文档大小和调用耗时配置代理请求体限制及超时，不将 `/healthz` 当作完整业务健康证明。
+代理必须保留`Authorization`、`Idempotency-Key`及多租户模式的`X-Harness-Tenant`，并透传Cookie/Set-Cookie和浏览器同源请求头。HTTPS部署保持`HARNESS_ADMIN_SECURE_COOKIE=true`；服务不信任任意客户端伪造的代理协议头。不要记录凭据、Cookie或密码请求体，不对POST/PUT自动改写请求体或重试为新key；客户端超时后应按原key重试原请求。按实际文档大小和调用耗时配置代理请求体限制及超时，不将`/healthz`当作完整业务健康证明。
 
 ```sh
 harness --url https://harness.example.com health

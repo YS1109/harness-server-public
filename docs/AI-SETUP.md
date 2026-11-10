@@ -26,7 +26,7 @@ harness --version
 
 ## 2. 配置连接和项目映射
 
-v0.4客户端可用下面的统一入口，URL使用全局参数，token仍由已有执行环境注入。命令核验服务身份与授权后才原子合并配置，已有配置会留备份；空配置沿用服务凭据绑定的Agent ID，已有ID不自动改名；不注册身份、不生成空间、不保存token值：
+支持v0.6的客户端使用下面的统一入口，URL使用全局参数，token仍由已有执行环境注入。命令核验服务身份与授权后才原子合并配置，已有配置会留备份；空配置沿用服务凭据绑定的Agent ID，已有ID不自动改名；不注册身份、不生成空间、不保存token值：
 
 ```sh
 harness --url https://your-harness.example setup --token-env HARNESS_TOKEN --project demo --project-root /path/to/demo
@@ -34,7 +34,11 @@ harness doctor
 harness bind demo /path/to/demo
 ```
 
-参数化调用适合机器人；在交互终端未提供URL时会提示填写或保留现有值。独立空间仍由管理员创建授权，用`connect`选择。`doctor`只读显示有效配置/服务默认值、项目路径和连接问题，不写试验记忆；它不是日常任务步骤。新服务通过connect/setup启用scoped-v2；旧服务继续v1，不直接删掉预检。
+交互终端未提供URL时会提示填写或保留现有值；没有本机默认空间时，展示已授权空间并选择默认写入及读取范围。机器人应提供`--namespace`与可选`--read-namespaces`：只有一个可写空间时可自动选择，多个可写空间时返回候选并停止，不替用户猜测。首次业务调用也使用这套一次性选择；保存后后续调用不重复发现。独立空间仍由管理员创建授权。详见[首次接入](CLIENT-SETUP.md)。
+
+`doctor`只读显示有效配置/服务默认值、项目路径和连接问题，不写试验记忆；它不是日常任务步骤。新服务通过connect/setup启用scoped-v2；旧服务继续v1，不直接删掉预检。对缺少空间发现的旧服务，仅在已确认是旧单空间部署时显式使用`--namespace shared`。
+
+多租户服务另带`--tenant <服务配置的租户ID>`，每个租户使用独立`--config`；不能把原租户配置直接改投另一个租户。后台账号密码与Agent token独立；账号由部署配置提供，`/admin`可保持登录。参见[多租户](MULTI-TENANCY.md)与[后台登录](ADMIN-LOGIN.md)。
 
 
 默认配置位置：Unix/macOS 的 `$XDG_CONFIG_HOME/harness-server/client.json`，未设该变量时为 `~/.config/harness-server/client.json`；Windows 为 `%APPDATA%\harness-server\client.json`。也可用 `--config` 或 `HARNESS_CLIENT_CONFIG` 明确指定。
@@ -57,7 +61,7 @@ Windows 路径使用 `C:\\code\\my-project` 等 JSON 字符串。目录是客户
 
 按 [空间接入指南](AGENT-NAMESPACES.md) 为长期 Agent 配置独立文件。`init --agent-id <用户自定义ID>` 只保存身份，不生成 namespace；未指定则一次生成 UUID，重复初始化保留。管理员在服务部署中绑定相同 ID 和独立凭据，然后在 `/admin` 创建空间、分配多个读写授权及默认范围。管理 token 与 Agent token 分开，不索取到聊天、不写入配置 JSON。
 
-用 `harness namespaces` 读取已有授权，再 `harness connect` 核验保存选择；namespace/read_namespaces 为 null 时沿用服务默认值。不能用不存在的 ID 自动接入。先升级服务和备份工具，再验证客户端；确认 scoped identity/来源返回正确后才切换日常入口。任务的 Session 仍在开始时的空间收尾，不能因默认值变化改投；实际无部署、无授权时明确说明。
+用`harness connect`一次读取已有授权并核验保存选择，无须先调用namespaces。已有有效本机选择保留；没有选择时按首次接入流程展示候选，不能用不存在的ID自动接入。读取范围留空时使用选定空间的服务读取默认值。先升级服务和备份工具，再验证客户端；确认租户、scoped identity与来源返回正确后才切换日常入口。任务的Session仍在原租户和空间收尾，不能因默认值变化改投；实际无部署、无授权时明确说明。
 
 ## 3. 注入设备 token
 
@@ -99,4 +103,4 @@ harness list --kind workstream --project my-project --limit 3
 
 ## 交付给用户的说明
 
-简述实际配置的地址、配置路径、项目映射、凭据注入方式（不含值）、已完成的验证、日常入口是否切换及仍缺少的条件。未部署、未运行或未迁移的步骤不能声明完成。当前权限模型仍是同一用户的可信设备；旧模式有效token访问shared，新身份配置可限制namespace读写，但namespace内没有项目级或多用户权限隔离。
+简述实际配置的地址、配置路径、租户、默认空间、项目映射、凭据注入方式（不含值）、已完成的验证、日常入口是否切换及仍缺少的条件。未部署、未运行或未迁移的步骤不能声明完成。单租户模式面向同一租户的可信设备；显式多租户模式分别核验凭据并隔离存储。namespace内没有项目级权限隔离，租户选择本身也不授予权限。

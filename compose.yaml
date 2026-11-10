@@ -1,12 +1,16 @@
 services:
   harness-server:
-    image: harness-server:0.1.0
+    image: harness-server:0.6.0
     build:
       context: .
       dockerfile: Dockerfile
     command: ["--data-dir", "/data", "serve", "--bind", "0.0.0.0:8080"]
     environment:
       HARNESS_TOKEN: "${HARNESS_TOKEN:?Set HARNESS_TOKEN in .env to at least 32 characters}"
+      HARNESS_ADMIN_USERNAME: "${HARNESS_ADMIN_USERNAME:-}"
+      HARNESS_ADMIN_PASSWORD_HASH: "${HARNESS_ADMIN_PASSWORD_HASH:-}"
+      HARNESS_ADMIN_TOKEN: "${HARNESS_ADMIN_TOKEN:-}"
+      HARNESS_ADMIN_SECURE_COOKIE: "${HARNESS_ADMIN_SECURE_COOKIE:-true}"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

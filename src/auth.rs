@@ -16,6 +16,7 @@ pub struct Principal {
 
 #[derive(Clone)]
 pub struct Access {
+    pub purpose: Option<crate::metrics::Purpose>,
     pub protocol: String,
     pub agent_id: Option<String>,
     pub namespace: String,
@@ -145,6 +146,7 @@ pub fn authorize(
         return Err(Error::Forbidden("凭据未获当前namespace的访问权限".into()));
     }
     Ok(Some(Access {
+        purpose: None,
         protocol: "v1".into(),
         legacy_shared: namespace == "shared" && agent_id.is_none(),
         read_namespaces: vec![namespace.into()],

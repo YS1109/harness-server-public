@@ -41,14 +41,12 @@ fn main() {
     for name in ["HEAD", "index"] {
         if let Some(path) = git(&["rev-parse", "--git-path", name]) {
             println!("cargo:rerun-if-changed={path}");
-            if name == "HEAD" {
-                if let Ok(head) = fs::read_to_string(&path) {
-                    if let Some(reference) = head.trim().strip_prefix("ref: ") {
-                        if let Some(path) = git(&["rev-parse", "--git-path", reference]) {
-                            println!("cargo:rerun-if-changed={path}");
-                        }
-                    }
-                }
+            if name == "HEAD"
+                && let Ok(head) = fs::read_to_string(&path)
+                && let Some(reference) = head.trim().strip_prefix("ref: ")
+                && let Some(path) = git(&["rev-parse", "--git-path", reference])
+            {
+                println!("cargo:rerun-if-changed={path}");
             }
         }
     }

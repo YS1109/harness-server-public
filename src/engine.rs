@@ -194,6 +194,7 @@ fn route_sources(docs: &Documents, v: &Value, scopes: Option<&[String]>) -> Resu
             "content",
             "candidates_only",
             "candidate_offset",
+            "explain",
         ],
     )?;
     let project = required(v, "project")?;
@@ -217,11 +218,20 @@ fn route_sources(docs: &Documents, v: &Value, scopes: Option<&[String]>) -> Resu
         canonical(docs, project)?
     };
     let raw = text(v, "scenario").to_lowercase();
+    let explain = v.get("explain").and_then(Value::as_bool).unwrap_or(false);
     // Negated clauses cannot promote automatic selections or weak candidates.
-    let query = Regex::new(r"(?:不要|不用|别|无需|不需要|不再|不做|不改|禁止)[^，,。；;]*")
+    if raw.chars().count() > 2000 {
+        return Err(invalid("检索问题超过2000字"));
+    }
+    let positive = Regex::new(r"(?:不要|不用|别|无需|不需要|不再|不做|不改|禁止)[^，,。；;]*")
         .unwrap()
         .replace_all(&raw, "")
         .to_string();
+    // Only explicit background/example clauses are excluded. Ordinary HTTP/code
+    // mentions still participate; no positional preference or broad score cutoff.
+    let background = Regex::new(r"[^，,。；;！？!?\n]*(?:只是背景|仅作背景|仅为背景|仅作为背景|仅供参考|只是示例|仅作示例|仅作为示例)[^，,。；;！？!?\n]*").unwrap();
+    let ignored_background_clauses = background.find_iter(&positive).count();
+    let query = background.replace_all(&positive, "").to_string();
     let offset = v
         .get("candidate_offset")
         .map(|x| {
@@ -281,16 +291,20 @@ fn route_sources(docs: &Documents, v: &Value, scopes: Option<&[String]>) -> Resu
                 continue;
             }
             let mut score = 0;
+            let mut evidence = Vec::new();
             let id = string(&m, "topic_id").to_owned();
-            for (list, weight) in [
-                (vec![id.clone()], 8),
-                (strings(&m, "aliases"), 6),
-                (vec![string(&m, "title").to_owned()], 4),
-                (strings(&m, "triggers"), 4),
+            for (field, list, weight) in [
+                ("topic_id", vec![id.clone()], 8),
+                ("aliases", strings(&m, "aliases"), 6),
+                ("title", vec![string(&m, "title").to_owned()], 4),
+                ("triggers", strings(&m, "triggers"), 4),
             ] {
                 for term in list {
                     if lexical_match(&query, &term.to_lowercase()) {
                         score += weight;
+                        if explain {
+                            evidence.push(json!({"field":field,"term":term,"weight":weight}));
+                        }
                     }
                 }
             }
@@ -302,6 +316,9 @@ fn route_sources(docs: &Documents, v: &Value, scopes: Option<&[String]>) -> Resu
             for symbol in symbols {
                 if lexical_match(&query, &symbol.to_lowercase()) {
                     score += 5;
+                    if explain {
+                        evidence.push(json!({"field":"body_symbol","term":symbol,"weight":5}));
+                    }
                     affinity += symbol
                         .split(['_', '-'])
                         .filter(|part| part.len() >= 3 && id.split('-').any(|p| p == *part))
@@ -317,7 +334,7 @@ fn route_sources(docs: &Documents, v: &Value, scopes: Option<&[String]>) -> Resu
                 strings(&m, "triggers").join(" ")
             );
             let weak = query_terms.intersection(&terms(&description)).count();
-            topics.push((score, affinity, weak, id, p.clone(), m));
+            topics.push((score, affinity, weak, id, p.clone(), m, evidence));
         }
     }
     topics.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.3.cmp(&b.3)));
@@ -414,6 +431,26 @@ fn route_sources(docs: &Documents, v: &Value, scopes: Option<&[String]>) -> Resu
     let processes: Vec<_> = processes.into_iter().take(2).map(|t| t.2).collect();
     let selected: Vec<_> = selected.into_iter().collect();
     let mut result = json!({"mode":"LOAD","project":project,"project_memory":parent,"project_topics":selected,"process_memories":processes,"topic_candidates":candidates,"route_outcome":outcome,"topic_count":topics.len(),"candidate_total":total,"candidate_offset":offset,"candidate_remaining":total.saturating_sub(offset.saturating_add(candidates.len()))});
+    if explain {
+        let candidates: Vec<_> = topics.iter().take(20).map(|t| {
+            let evidence:Vec<_> = t.6.iter().take(16).cloned().collect();
+            json!({"topic_id":t.3,"path":t.4,"score":t.0,"symbol_affinity":t.1,"weak_overlap":t.2,
+                "selected":selected.contains(&t.4),"matches":evidence,"match_total":t.6.len()})
+        }).collect();
+        let loaded: Vec<_> = parent
+            .iter()
+            .chain(processes.iter())
+            .chain(selected.iter())
+            .map(|p| json!({"path":p,"returned_characters_if_content":docs[p].chars().count()}))
+            .collect();
+        result["explanation"] = json!({
+            "outcome":outcome,"ambiguous":ambiguous,"candidates":candidates,
+            "candidate_total":topics.len(),"candidate_limit":20,
+            "ignored_background_clauses":ignored_background_clauses,"loaded":loaded,
+            "budget":{"project_entries":1,"topics":1,"processes":2},
+            "scope":"显式只读诊断；分数是确定性排序依据，不是概率或正确率；不记录问题正文"
+        });
+    }
     if v.get("content").and_then(Value::as_bool).unwrap_or(false) {
         let paths = parent.into_iter().chain(processes).chain(selected);
         let content: Vec<_> = paths.map(|p| item(docs, &p)).collect();
@@ -438,7 +475,14 @@ pub fn list(docs: &Documents, v: &Value) -> Result<Value> {
     if !kind.is_empty()
         && !matches!(
             kind,
-            "project" | "project_topic" | "process" | "template" | "session" | "workstream" | "log"
+            "knowledge"
+                | "project"
+                | "project_topic"
+                | "process"
+                | "template"
+                | "session"
+                | "workstream"
+                | "log"
         )
     {
         return Err(invalid("kind无效"));
@@ -463,7 +507,12 @@ pub fn list(docs: &Documents, v: &Value) -> Result<Value> {
         if actual.starts_with("execution_") {
             continue;
         }
-        if !kind.is_empty() && actual != kind {
+        if kind == "knowledge"
+            && !matches!(actual, "project" | "project_topic" | "process" | "template")
+        {
+            continue;
+        }
+        if !kind.is_empty() && kind != "knowledge" && actual != kind {
             continue;
         }
         if actual == "log" {

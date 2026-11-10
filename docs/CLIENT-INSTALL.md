@@ -59,6 +59,7 @@ macOS 包没有 Developer ID 签名或公证。若系统阻止运行，核验来
 默认连接 `http://localhost:8080`；访问云端必须改用实际 HTTPS 地址。客户端所在机器的 localhost 不指向另一台云机。设备 token 通过服务端已认可的 `HARNESS_TOKEN` 环境变量注入，JSON 不存 token 值。
 
 ```sh
+harness setup
 harness health
 harness route --project '<真实项目ID>' --scenario coding --content
 ```
@@ -67,10 +68,14 @@ harness route --project '<真实项目ID>' --scenario coding --content
 
 ## v0.3 独立 Agent 与多个空间
 
-支持本版的包可 `harness init --agent-id codex-example`，不带 ID 则一次生成 UUID；重复初始化保留，namespace 不再自动生成。不同长期 Agent 用独立 `--config <文件>`，URL/token_env/项目映射保留。`harness identity` 仅看本机，`harness namespaces` 查询服务已有授权，`harness connect --namespace <服务ID> --read-namespaces <ID1,ID2>` 核验并保存选择；无显式选择则遵循服务默认值。
+支持本版的包可 `harness init --agent-id codex-example`，不带 ID 则一次生成 UUID；重复初始化保留，namespace 不再自动生成。不同长期 Agent 用独立 `--config <文件>`，URL/token_env/项目映射保留。`harness identity` 仅看本机，`harness namespaces` 查询服务已有授权，`harness connect --namespace <服务ID> --read-namespaces <ID1,ID2>` 核验并保存选择。v0.6在没有本机默认空间时展示并选择；已保存选择继续复用。非交互的多候选场景必须显式选择，不能猜测服务默认值，详见[首次接入](https://github.com/YS1109/harness-server-public/blob/main/docs/CLIENT-SETUP.md)。
 
 管理员通过部署凭据绑定身份，通过 `/admin` 创建空间并分配权限。客户端不能自行创建 namespace。旧 v0.1.0 包和服务不支持这些参数；新客户端会在 scoped 写入前拒绝不支持的旧服务。指南：https://github.com/YS1109/harness-server-public/blob/main/docs/AGENT-NAMESPACES.md 。
 
 ## v0.3.1 客户端规则入口
 
-安装支持本版的客户端后运行 `harness instructions`，规则随二进制提供，无需下载另一份提示词。`--bootstrap`输出全局短入口，`--json`提供结构化协议；均为本地只读操作，不需要token。首次接入设备空间后，规则会显示实际本机选择；授权仍由服务验证。详见[客户端规则](https://github.com/YS1109/harness-server-public/blob/main/docs/CLIENT-RULES.md)。当前源码v0.3.2包含本功能及Windows UTF-8发布校验修复；本仓库安装包状态以[Releases](https://github.com/YS1109/harness-server-public/releases)为准。旧v0.3.0没有instructions命令，应升级并验证后再切换全局入口。
+安装支持本版的客户端后运行 `harness instructions`，规则随二进制提供，无需下载另一份提示词。`--bootstrap`输出全局短入口，`--json`提供结构化协议；均为本地只读操作，不需要token。首次接入设备空间后，规则会显示实际本机选择；授权仍由服务验证。详见[客户端规则](https://github.com/YS1109/harness-server-public/blob/main/docs/CLIENT-RULES.md)。源码版本与实际安装包分别验收；安装包状态以[Releases](https://github.com/YS1109/harness-server-public/releases)为准。旧v0.3.0没有instructions命令，应升级并验证后再切换全局入口。
+
+## v0.6 租户选择
+
+多租户服务使用`harness --config <该租户配置文件> --tenant <租户ID> setup`；服务负责核验租户凭据，客户端不能自行注册租户。每个租户用独立配置文件，切换时不复用另一个租户的空间或交接。单租户服务留空，详见[多租户](https://github.com/YS1109/harness-server-public/blob/main/docs/MULTI-TENANCY.md)。

@@ -11,6 +11,7 @@ const root = resolve(__dirname, '..');
 const html = readFileSync(resolve(root, 'src/console.html'), 'utf8');
 const script = readFileSync(resolve(root, 'src/console.js'), 'utf8');
 const tick = () => new Promise((done) => setImmediate(done));
+const fixturePassword = randomUUID();
 
 class Node {
   constructor(tag) {
@@ -35,6 +36,7 @@ class Node {
     if (name.startsWith('data-')) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value;
     if (name === 'hidden') this.hidden = true;
     if (name === 'disabled') this.disabled = true;
+    if (name === 'checked') this.checked = true;
   }
   removeAttribute(name) { delete this.attrs[name]; }
   matches(selector) {
@@ -60,12 +62,12 @@ class Node {
   }
   click() { return this.disabled ? Promise.resolve() : this.dispatch('click'); }
   requestSubmit() { return this.dispatch('submit'); }
-  reset() { this.querySelectorAll('input, textarea, select').forEach((control) => { control._value = undefined; }); }
+  reset() { this.querySelectorAll('input, textarea, select').forEach((control) => { control._value = undefined; control.checked = control.attrs.checked !== undefined; }); }
   focus() { this.focused = true; }
   showModal() { this.open = true; }
   close() { this.open = false; }
 }
-function setup(session = new Map()) {
+function setup(session = new Map(), preferences = new Map(), options = {}) {
   const doc = new Node('document'); const stack = [doc]; const ids = new Map();
   const voids = new Set(['meta', 'link', 'input', 'br']);
   for (const token of html.matchAll(/<[^>]+>|[^<]+/g)) {
@@ -83,22 +85,43 @@ function setup(session = new Map()) {
   doc.createElement = (tag) => new Node(tag);
   const calls = []; const window = new Node('window'); window.confirm = () => true;
   window.sessionStorage = { getItem: (key) => session.get(key) ?? null, setItem: (key, value) => session.set(key, value), removeItem: (key) => session.delete(key) };
+  window.localStorage = { getItem: (key) => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value), removeItem: (key) => preferences.delete(key) };
   const fetch = (path, options) => new Promise((resolveRequest, reject) => {
     // Deliberately allow replies after abort: epoch/sequence checks must protect UI too.
     calls.push({ path, options, reject, reply: (data, status = 200) => resolveRequest({ ok: status < 400, status, json: typeof data === 'function' ? data : async () => data }) });
+    const call = calls.at(-1);
+    if (path === '/admin/api/session' && !fixtureOptions.manualResume) queueMicrotask(() => call.reply({ error: 'no session' }, 401));
+    if (path === '/admin/api/logout' && !fixtureOptions.manualLogout) queueMicrotask(() => call.reply({ authenticated: false }));
   });
+  const fixtureOptions = options;
   const context = vm.createContext({ document: doc, window, fetch, AbortController, URLSearchParams, setTimeout, clearTimeout, crypto: { randomUUID } });
   vm.runInContext(script, context);
-  return { $: doc.getElementById, calls, window, async fire(id, type = 'click', fields) { const result = doc.getElementById(id).dispatch(type, fields); await tick(); return result; } };
+  return { $: doc.getElementById, calls, window, preferences, session, async fire(id, type = 'click', fields) { const result = doc.getElementById(id).dispatch(type, fields); await tick(); return result; } };
 }
 const overview = {
   namespaces: [{ id: 'shared', name: '公共', status: 'ACTIVE', sha256: 'namespace-sha' }, { id: 'device', name: '设备', status: 'ACTIVE' }],
   agents: [{ id: 'agent', name: 'Agent', sha256: 'agent-sha', read_namespaces: ['shared'], write_namespaces: ['shared'], default_read_namespaces: ['shared'], default_write_namespace: 'shared' }],
 };
 const runtime = { routing_evaluation: { latest: null }, sample_at: '2026-10-15T01:00:00Z', cache_age_seconds: 4, cache_hit: true, version: 'test', uptime_seconds: 42, window_days: 30, storage: { documents: 0, document_limit: 4096, disk_bytes: null }, metrics: { observed_calls: 0, handler_ms_p50: null, returned_characters: null }, metrics_scope: '仅业务处理器', net_benefit: '尚未测量', namespaces: [] };
-async function login(ui) {
-  ui.$('admin-token').value = 'test-admin-token'; const pending = ui.fire('login-form', 'submit');
-  await tick(); ui.calls.at(-1).reply(overview); await tick();
+const editableDocument = { namespace:'shared',path:'memory/project/demo.md',kind:'project',editable:true,status:'ACTIVE',verified_at:'unknown',content:'# Before',sha256:'old-sha',budget:{used:8,limit:2000,unit:'Unicode characters'} };
+async function openEditable(ui, source=editableDocument) {
+  const pending=ui.fire('nav-documents'); await tick();
+  last(ui,'kind=knowledge').reply({documents:[{...source,title:'Demo'}],total:1,remaining:0});
+  await pending;
+  const reading=ui.$('knowledge-body').querySelector('button').click(); await tick();
+  last(ui,'/document?namespace=shared').reply(source); await reading;
+  await ui.$('preview-actions').querySelector('button').click();
+}
+async function login(ui, { token = false, remember = false, reauth = false } = {}) {
+  await tick();
+  ui.$('token-mode').checked = token; await ui.fire('token-mode', 'change');
+  ui.$('remember-login').checked = remember;
+  if (token) ui.$('admin-token').value = 'test-admin-token';
+  else { ui.$('admin-username').value = 'administrator'; ui.$('admin-password').value = fixturePassword; }
+  const pending = ui.fire('login-form', 'submit');
+  await tick(); last(ui, '/admin/api/login').reply({ authenticated: true }); await tick();
+  last(ui, '/admin/api/overview').reply(overview); await tick();
+  if (reauth) { await pending; return; }
   assert.equal(ui.calls.at(-1).path, '/admin/api/runtime?days=30');
   ui.calls.at(-1).reply(runtime); await pending;
 }
@@ -151,10 +174,11 @@ test('console: scoped reads, stale/failed filters, readonly detail and auth life
   contentRead.reply({ documents: [{ path: 'late', title: 'late content' }], total: 1 }); await tick();
   assert.equal(ui.$('documents-body').textContent, ''); assert.equal(ui.$('workspace').hidden, true); assert.equal(ui.$('runtime-content').textContent, '');
   for (const call of ui.calls) {
-    assert.equal(call.options.mode, 'same-origin'); assert.equal(call.options.redirect, 'error'); assert.equal(call.options.credentials, 'omit');
-    assert.equal(call.options.headers.Authorization, 'Bearer test-admin-token'); assert(!call.path.includes('test-admin-token'));
+    assert.equal(call.options.mode, 'same-origin'); assert.equal(call.options.redirect, 'error'); assert.equal(call.options.credentials, 'same-origin');
+    assert.equal(call.options.headers.Authorization, undefined); assert(!call.path.includes('test-admin-token'));
+    assert.equal(call.options.headers['X-Harness-Admin-Request'], '1');
   }
-  assert(!/innerHTML|localStorage|setInterval/.test(script));
+  assert(!/innerHTML|setInterval|state\.token/.test(script));
 });
 
 test('console: pending mutation retains exact body/key; CAS conflict closes editor', async () => {
@@ -202,7 +226,8 @@ test('console: abort during JSON decoding, reconnect, offline and keyboard navig
   assert.equal(ui.$('documents-body').textContent, '');
   const opening = ui.fire('nav-runtime'); await tick();
   last(ui, '/runtime?').reply({ error: 'test-admin-token rejected' }, 401); await opening;
-  assert.match(ui.$('runtime-state').textContent, /重新连接/); assert(!ui.$('runtime-state').textContent.includes('test-admin-token'));
+  assert.match(ui.$('runtime-state').textContent, /重新登录/); assert(!ui.$('runtime-state').textContent.includes('test-admin-token'));
+  assert.equal(ui.$('login-view').hidden, false);
   await ui.fire('logout');
 });
 
@@ -332,11 +357,11 @@ test('console: routing evaluation uses embedded reports or scoped GET; stale rep
   await ui.fire('runtime-filters', 'submit'); ui.calls.at(-1).reply(withoutEmbedded); await tick();
   last(ui, '/routing-evaluation').reply({ error: 'offline' }, 503); await tick();
   assert.match(ui.$('routing-state').textContent, /503.*保留上次结果/); assert.match(ui.$('runtime-content').textContent, /观测调用0/);
-  assert(ui.calls.every((call) => (call.options.method || 'GET') === 'GET'));
+  assert(ui.calls.filter((call) => call.path !== '/admin/api/login').every((call) => (call.options.method || 'GET') === 'GET'));
   await ui.fire('logout');
 });
 
-test('console: browser reload restores only session filters and never credentials', async () => {
+test('console: browser reload restores tenant-scoped filters and probes the HttpOnly session', async () => {
   const session = new Map(); const first = setup(session); await login(first);
   const opening = first.fire('nav-handoffs'); await tick(); first.calls.at(-1).reply({ documents: [] }); await opening;
   first.$('browse-namespace').value = 'device'; first.$('browse-kind').value = 'session';
@@ -346,7 +371,8 @@ test('console: browser reload restores only session filters and never credential
   await first.window.dispatch('beforeunload');
   assert.equal(session.size, 1); assert(![...session.values()].join('').includes('test-admin-token'));
   const reloaded = setup(session);
-  assert.equal(reloaded.calls.length, 0, 'reloading never restores authentication');
+  assert.equal(reloaded.calls.length, 1, 'reloading verifies the server session');
+  assert.equal(reloaded.calls[0].path, '/admin/api/session');
   assert.equal(reloaded.$('workspace').hidden, true); assert.equal(reloaded.$('admin-token').value, '');
   await login(reloaded);
   const restored = reloaded.fire('nav-handoffs'); await tick();
@@ -376,4 +402,204 @@ test('console: corrupt and unreadable evaluation reports are distinct from absen
   }
   await ui.fire('runtime-filters', 'submit'); ui.calls.at(-1).reply({ ...runtime, routing_evaluation: null }); await tick();
   assert.equal(ui.$('routing-content').textContent, '暂无评测'); await ui.fire('logout');
+});
+
+test('console: knowledge editor validates exact drafts and retains conflicts for manual merge',async()=>{
+  const ui=setup();await login(ui);await openEditable(ui);
+  assert.equal(ui.$('document-dialog').open,true);assert.equal(ui.$('document-save').disabled,true);
+  ui.$('document-content').value='# Draft';await ui.fire('document-content','input');
+  const validating=ui.fire('document-preview');await tick();
+  const preview=last(ui,'/document/preview');
+  assert.equal(preview.options.headers['Idempotency-Key'],undefined,'preview is a readonly POST');
+  assert.equal(JSON.parse(preview.options.body).expected_sha256,'old-sha');
+  preview.reply({validated:true,written:false,changes:[{namespace:'shared',path:editableDocument.path,before:'# Before',after:'# Draft',budget:editableDocument.budget}]});await validating;
+  assert.equal(ui.$('document-save').disabled,false);assert.match(ui.$('document-diff').textContent,/# Draft/);
+  const saving=ui.fire('document-save');await tick();const write=last(ui,'/admin/api/document');
+  write.reply({error:{message:'changed'}},409);await saving;
+  assert.equal(ui.$('document-content').value,'# Draft');assert.equal(ui.$('document-dialog').open,true);
+  assert.equal(ui.$('document-conflict').hidden,false);assert.equal(ui.$('document-save').disabled,true);
+  const loading=ui.fire('document-read-latest');await tick();
+  last(ui,'/document?').reply({...editableDocument,sha256:'new-sha',content:'# Latest'});await loading;
+  assert.equal(ui.$('document-content').value,'# Draft');
+  await ui.fire('document-use-latest');
+  assert.equal(ui.$('document-content').value,'# Draft');assert.equal(ui.$('document-save').disabled,true);
+  const again=ui.fire('document-preview');await tick();
+  const merged=last(ui,'/document/preview');assert.equal(JSON.parse(merged.options.body).expected_sha256,'new-sha');
+  merged.reply({validated:true,written:false,changes:[]});await again;
+  assert.equal(ui.$('document-save').disabled,false);
+  ui.$('document-content').value='# Modified after preview';await ui.fire('document-content','input');
+  assert.equal(ui.$('document-save').disabled,true);
+});
+
+test('console: unknown document writes preserve draft and exact idempotent retry',async()=>{
+  const ui=setup();await login(ui);await openEditable(ui);
+  ui.$('document-content').value='# Draft';await ui.fire('document-content','input');
+  const validating=ui.fire('document-preview');await tick();
+  last(ui,'/document/preview').reply({validated:true,written:false,changes:[]});await validating;
+  const saving=ui.fire('document-save');await tick();const first=last(ui,'/admin/api/document');
+  first.reject(new Error('network'));await saving;
+  assert.equal(ui.$('document-content').value,'# Draft');assert.equal(ui.$('document-dialog').open,true);
+  assert.equal(ui.$('document-content').disabled,true);assert.equal(ui.$('pending-banner').hidden,false);
+  const retrying=ui.fire('retry-mutation');await tick();const retry=last(ui,'/admin/api/document');
+  assert.equal(retry.options.body,first.options.body);assert.equal(retry.options.headers['Idempotency-Key'],first.options.headers['Idempotency-Key']);
+  retry.reply({});await tick();last(ui,'/overview').reply(overview);await tick();
+  last(ui,'/documents?').reply({documents:[],total:0,remaining:0});await retrying;
+  assert.equal(ui.$('document-dialog').open,false);assert.equal(ui.$('pending-banner').hidden,true);
+});
+
+test('console: diagnosis and template checks are explicit readonly POSTs and reject stale results',async()=>{
+  const ui=setup();await login(ui);await ui.fire('nav-diagnosis');
+  [...ui.$('diagnosis-spaces').options].forEach((o)=>{o.selected=o.value==='shared';});
+  ui.$('diagnosis-project').value='demo';ui.$('diagnosis-scenario').value='客户端规则';
+  const checking=ui.fire('diagnosis-form','submit');await tick();const first=last(ui,'/admin/api/route');
+  assert.equal(first.options.headers['Idempotency-Key'],undefined);
+  await ui.fire('diagnosis-form','input');first.reply({topic_count:999,explanation:{candidates:[]}});await checking;
+  assert.doesNotMatch(ui.$('diagnosis-state').textContent,/999/);
+  const source={...editableDocument,kind:'template',path:'memory/templates/release.md',content:'# Release',verified_at:null};
+  const opening=ui.fire('nav-documents');await tick();last(ui,'kind=knowledge').reply({documents:[{...source,title:'Release'}],total:1,remaining:0});await opening;
+  const reading=ui.$('knowledge-body').querySelector('button').click();await tick();last(ui,'/document?').reply(source);await reading;
+  const actions=ui.$('preview-actions').querySelectorAll('button');assert.equal(actions.length,2,'template has edit and check, no archive');
+  await actions[1].click();ui.$('template-document').value='# Release';
+  const verifying=ui.fire('template-check');await tick();const template=last(ui,'/admin/api/check-template');
+  assert.equal(template.options.headers['Idempotency-Key'],undefined);
+  template.reply({passed:true,missing:[],structural_only:true});await verifying;
+  assert.match(ui.$('template-state').textContent,/结构检查通过/);
+  await ui.fire('template-document','input');assert.equal(ui.$('template-result').textContent,'');
+});
+
+test('console: purpose filters preserve totals and clearly partition labelled costs',async()=>{
+  const ui=setup();await login(ui);
+  ui.$('runtime-purpose').value='maintenance';
+  const pending=ui.fire('runtime-filters','submit');await tick();
+  last(ui,'purpose=maintenance').reply({...runtime,purpose_scope:'未标注不推断',purpose_metrics:{maintenance:{observed_calls:3,failures:1,handler_ms_total:42,handler_ms_p50:12,returned_characters:null}}});
+  await pending;await tick();assert.match(ui.$('runtime-content').textContent,/按调用用途观察/);assert.match(ui.$('runtime-content').textContent,/维护/);assert.match(ui.$('runtime-state').textContent,/maintenance/);
+});
+
+test('console: password-manager login and remember choice never enter browser storage', async () => {
+  const ui = setup();
+  assert.equal(ui.$('admin-username').attrs.autocomplete, 'username');
+  assert.equal(ui.$('admin-password').attrs.autocomplete, 'current-password');
+  assert.equal(ui.$('admin-token').disabled, true);
+  await login(ui, { remember: true });
+  assert.equal(ui.$('active-tenant').textContent, '单租户');
+  assert.equal(ui.$('active-tenant').hidden, false);
+  const exchange = ui.calls.find((call) => call.path === '/admin/api/login');
+  assert.deepEqual(JSON.parse(exchange.options.body), { username: 'administrator', password: fixturePassword, remember: true });
+  assert.equal(exchange.options.headers.Authorization, undefined);
+  assert.equal(ui.$('admin-password').value, '');
+  assert.equal(ui.$('admin-token').value, '');
+  await ui.window.dispatch('beforeunload');
+  for (const store of [ui.preferences, ui.session]) {
+    assert(![...store.values()].join('').includes(fixturePassword));
+    assert(![...store.values()].join('').includes('test-admin-token'));
+  }
+  assert.deepEqual([...ui.preferences.keys()], ['harness.console.tenant']);
+  await ui.fire('logout');
+  assert.equal(ui.$('active-tenant').hidden, true);
+});
+
+test('console: advanced token is exchanged once and every selected tenant request is scoped', async () => {
+  const prefs = new Map([['harness.console.tenant', 'team-a']]);
+  const ui = setup(new Map(), prefs);
+  await login(ui, { token: true });
+  assert.equal(ui.$('active-tenant').textContent, '租户 team-a');
+  assert.equal(ui.$('active-tenant').title, '租户 team-a');
+  await ui.fire('global-agents');
+  assert.equal(ui.$('active-tenant').textContent, '租户 team-a');
+  for (const call of ui.calls) {
+    assert.equal(call.options.headers['X-Harness-Tenant'], 'team-a');
+    assert.equal(call.options.headers.Authorization, call.path === '/admin/api/login' ? 'Bearer test-admin-token' : undefined);
+  }
+  const body = JSON.parse(ui.calls.find((call) => call.path === '/admin/api/login').options.body);
+  assert.deepEqual(body, { remember: false });
+  assert.equal(ui.$('admin-token').value, '');
+  await ui.fire('logout');
+  assert.equal(ui.calls.at(-1).options.headers['X-Harness-Tenant'], 'team-a');
+  assert.equal(ui.$('admin-tenant').value, 'team-a');
+  assert.equal(prefs.get('harness.console.tenant'), 'team-a');
+});
+
+test('console: reload automatically resumes a verified cookie without a login exchange', async () => {
+  const prefs = new Map([['harness.console.tenant', 'team-b']]);
+  const ui = setup(new Map(), prefs, { manualResume: true });
+  const probe = last(ui, '/admin/api/session');
+  assert.equal(probe.options.credentials, 'same-origin');
+  assert.equal(probe.options.headers['X-Harness-Tenant'], 'team-b');
+  assert.equal(ui.$('login-submit').disabled, true);
+  probe.reply({ authenticated: true }); await tick();
+  last(ui, '/overview').reply(overview); await tick();
+  last(ui, '/runtime?').reply(runtime); await tick();
+  assert.equal(ui.$('workspace').hidden, false);
+  assert.equal(ui.$('active-tenant').textContent, '租户 team-b');
+  assert(!ui.calls.some((call) => call.path === '/admin/api/login'));
+  await ui.fire('logout');
+});
+
+test('console: a stale session response cannot authenticate another selected tenant', async () => {
+  const ui = setup(new Map(), new Map([['harness.console.tenant', 'team-a']]), { manualResume: true });
+  const first = last(ui, '/session');
+  // The selector is disabled during the initial check in real browsers.
+  ui.$('admin-tenant').value = 'team-b'; await ui.fire('admin-tenant', 'change');
+  const second = last(ui, '/session');
+  assert(first.options.signal.aborted);
+  assert.equal(second.options.headers['X-Harness-Tenant'], 'team-b');
+  second.reply({}, 401); await tick();
+  first.reply({ authenticated: true }); await tick();
+  assert.equal(ui.$('workspace').hidden, true);
+  assert(!ui.calls.some((call) => call.path.endsWith('/overview')));
+  assert.equal(ui.preferences.get('harness.console.tenant'), 'team-b');
+});
+
+test('console: a blank tenant 404 is a neutral hint and a selected missing tenant is actionable', async () => {
+  const first = setup(new Map(), new Map(), { manualResume: true });
+  last(first, '/session').reply({}, 404); await tick();
+  assert.equal(first.$('login-error').textContent, '');
+  assert.match(first.$('login-state').textContent, /多租户服务请先填写租户 ID，独立服务可留空/);
+  assert.equal(first.$('login-submit').disabled, false);
+  const selected = setup(new Map(), new Map([['harness.console.tenant', 'missing']]), { manualResume: true });
+  last(selected, '/session').reply({}, 404); await tick();
+  assert.match(selected.$('login-error').textContent, /未找到该租户.*核对租户 ID 与服务地址/);
+  assert.equal(selected.$('login-state').textContent, '');
+});
+
+test('console: a failed server logout stays unconfirmed until a successful retry', async () => {
+  const ui = setup(new Map(), new Map(), { manualLogout: true }); await login(ui);
+  let leaving = ui.fire('logout'); await tick();
+  last(ui, '/logout').reject(new Error('offline')); await leaving;
+  assert.equal(ui.$('workspace').hidden, false);
+  assert.match(ui.$('notice').textContent, /退出尚未确认/);
+  leaving = ui.fire('logout'); await tick();
+  last(ui, '/logout').reply({ authenticated: false }); await leaving;
+  assert.equal(ui.$('workspace').hidden, true);
+  assert.equal(ui.$('login-view').hidden, false);
+});
+
+test('console: expiry preserves an unknown document write and reauthentication retries its exact key', async () => {
+  const ui = setup(); await login(ui); await openEditable(ui);
+  ui.$('document-content').value = '# Retained'; await ui.fire('document-content', 'input');
+  let pending = ui.fire('document-preview'); await tick();
+  last(ui, '/document/preview').reply({ validated: true, written: false, changes: [] }); await pending;
+  pending = ui.fire('document-save'); await tick();
+  const first = last(ui, '/admin/api/document');
+  first.reject(new Error('response lost')); await pending;
+  pending = ui.fire('retry-mutation'); await tick();
+  last(ui, '/admin/api/document').reply({}, 401); await pending;
+  assert.equal(ui.$('workspace').hidden, true);
+  assert.equal(ui.$('document-dialog').open, false);
+  assert.equal(ui.$('document-content').value, '# Retained');
+  assert.equal(ui.$('pending-banner').hidden, false);
+  assert.equal(ui.$('admin-tenant').disabled, true, 'retained writes cannot move to another tenant');
+  await login(ui, { reauth: true });
+  assert.equal(ui.$('document-dialog').open, true);
+  assert.equal(ui.$('document-content').value, '# Retained');
+  pending = ui.fire('retry-mutation'); await tick();
+  const retried = last(ui, '/admin/api/document');
+  assert.equal(retried.options.body, first.options.body);
+  assert.equal(retried.options.headers['Idempotency-Key'], first.options.headers['Idempotency-Key']);
+  retried.reply({}); await tick();
+  last(ui, '/overview').reply(overview); await tick();
+  last(ui, '/documents?').reply({ documents: [], remaining: 0, total: 0 }); await pending;
+  assert.equal(ui.$('document-dialog').open, false);
+  assert.equal(ui.$('pending-banner').hidden, true);
+  await ui.fire('logout');
 });

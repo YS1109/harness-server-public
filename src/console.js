@@ -1,11 +1,12 @@
-/* Standalone admin UI. Authentication and unresolved writes live only in this page. */
+/* Same-origin admin UI. Credentials use HttpOnly cookies; unresolved drafts stay in this page. */
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
   const kinds = { project: '项目', project_topic: '专题', process: '流程', template: '模板', session: '会话', workstream: '工作流', execution_task: '执行任务', execution_attempt: '执行尝试', execution_context: '执行上下文', log: '日志' };
   const statuses = { ACTIVE: '使用中', ARCHIVED: '已归档', IDLE: '空闲', COMPLETED: '已完成', WAITING_USER: '等待用户', QUEUED: '排队中', DISPATCHING: '分派中', RUNNING: '运行中', RECONCILING: '核对中', SUCCEEDED: '已成功', FAILED: '失败', CANCELLED: '已取消', PENDING: '待回复', SENT: '已回复', DELIVERED: '已送达', NONE: '尚无回复', UNKNOWN: '结果未知' };
   const documentStatuses = ['ACTIVE', 'ARCHIVED', 'IDLE', 'RUNNING', 'WAITING_USER', 'COMPLETED'];
-  const state = { token: '', epoch: 0, overview: null, namespace: null, view: 'runtime', tab: 'content', offset: 0, kind: '', project: '', query: '', status: '', sort: 'path', total: 0, remaining: 0, documentsBusy: false, documentSequence: 0, previewSequence: 0, overviewSequence: 0, runtimeSequence: 0, browseSequence: 0, browseBusy: false, browseOffset: 0, browseRemaining: 0, browseFilters: null, browsePages: {}, runtimeCache: new Map(), runtimeDisplayed: null, storageReport: null, storageSequence: 0, routingCache: new Map(), pending: null, mutationBusy: false, fresh: false, editor: null, dirty: false };
+  const state = { authenticated: false, tenant: '', reauth: false, resumeDialog: null, epoch: 0, overview: null, namespace: null, view: 'runtime', tab: 'content', offset: 0, kind: '', project: '', query: '', status: '', sort: 'path', total: 0, remaining: 0, documentsBusy: false, documentSequence: 0, previewSequence: 0, overviewSequence: 0, runtimeSequence: 0, browseSequence: 0, browseBusy: false, browseOffset: 0, browseRemaining: 0, browseFilters: null, browsePages: {}, runtimeCache: new Map(), runtimeDisplayed: null, storageReport: null, storageSequence: 0, routingCache: new Map(), pending: null, mutationBusy: false, fresh: false, editor: null, dirty: false };
+  Object.assign(state, { knowledgeOffset: 0, knowledgeRemaining: 0, knowledgeSequence: 0, knowledgeBusy: false, documentSequenceEdit: 0, diagnosisSequence: 0, templateSequence: 0, template: null, previewData: null });
   const controllers = new Set();
   const readControllers = new Map();
 
@@ -36,7 +37,9 @@
     $('connection').className = `connection ${status}`;
   }
   function errorText(error) {
-    if (error.status === 401 || error.status === 403) return '管理员令牌无效或没有管理权限，请退出并重新连接。';
+    if (error.status === 401) return '会话已过期，请重新登录连接。当前草稿与待确认请求仍保留。';
+    if (error.status === 403) return '请求未获授权，请检查同源访问方式与管理权限。';
+    if (error.status === 429) return '登录尝试过于频繁，请一分钟后重试。';
     if (error.status === 409) return '版本冲突，请刷新并重新审阅最新数据。';
     if (error.status) return `请求失败（HTTP ${error.status}）。${error.message || '请检查输入或服务状态。'}`;
     return '连接中断或请求超时，请检查服务连接后重试。';
@@ -46,7 +49,7 @@
     readControllers.delete(group);
   }
   async function request(path, options = {}) {
-    // Only fixed, same-origin API paths reach fetch; token never enters a URL or storage.
+    // The bearer is used only for an explicit login exchange, never later requests.
     if (!path.startsWith('/admin/api/') || path.startsWith('//')) throw new Error('无效请求路径');
     if (options.group) cancelRead(options.group);
     const controller = new AbortController();
@@ -56,9 +59,9 @@
     const timeout = setTimeout(() => controller.abort(), 20000);
     try {
       const response = await fetch(path, {
-        method: options.method || 'GET', mode: 'same-origin', credentials: 'omit',
+        method: options.method || 'GET', mode: 'same-origin', credentials: 'same-origin',
         redirect: 'error', cache: 'no-store', signal: controller.signal,
-        headers: { Authorization: `Bearer ${state.token}`, Accept: 'application/json', ...(options.body !== undefined ? { 'Content-Type': 'application/json', 'Idempotency-Key': options.key } : {}) },
+        headers: { Accept: 'application/json', 'X-Harness-Admin-Request': '1', ...(state.tenant ? { 'X-Harness-Tenant': state.tenant } : {}), ...(options.bearer ? { Authorization: `Bearer ${options.bearer}` } : {}), ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(options.key ? { 'Idempotency-Key': options.key } : {}) },
         ...(options.body !== undefined ? { body: options.body } : {}),
       });
       if (epoch !== state.epoch) throw new Error('已退出');
@@ -68,12 +71,13 @@
         try {
           const data = await response.json();
           const message = typeof data.error === 'string' ? data.error : data.error?.message || data.message;
-          if (typeof message === 'string') error.message = message.replaceAll(state.token, '[已隐藏]').slice(0, 500);
+          if (typeof message === 'string' && response.status !== 401 && path !== '/admin/api/login') error.message = message.slice(0, 500);
         } catch { /* The HTTP status still gives a definite failure. */ }
+        if (response.status === 401 && state.authenticated && path !== '/admin/api/login') requireLogin();
         throw error;
       }
       // A successful mutation needs no response body. Refresh is a separate read.
-      if (options.body !== undefined) return null;
+      if (options.body !== undefined && !options.readBody) return null;
       const data = await response.json();
       if (epoch !== state.epoch || controller.signal.aborted) throw new Error('请求已取消');
       return data;
@@ -84,12 +88,17 @@
     }
   }
   function updateControls() {
-    const blocked = !state.fresh || state.mutationBusy || !!state.pending;
+    const blocked = !state.authenticated || !state.fresh || state.mutationBusy || !!state.pending;
     $('create-namespace').disabled = blocked;
     $('edit-namespace').disabled = blocked;
     $('refresh').disabled = state.mutationBusy;
     $('namespace-save').disabled = blocked;
     $('agent-save').disabled = blocked;
+    $('document-content').disabled = state.mutationBusy || !!state.pending;
+    $('document-preview').disabled = blocked || state.editor?.type !== 'document' || !!state.editor?.busy || !!state.editor?.conflict;
+    $('document-save').disabled = blocked || !state.editor?.validated || !!state.editor?.busy || !!state.editor?.conflict;
+    $('document-read-latest').disabled = state.mutationBusy || !!state.pending || !!state.editor?.busy;
+    $('document-use-latest').disabled = state.mutationBusy || !!state.pending || !state.editor?.latest;
     document.querySelectorAll('[data-edit-agent]').forEach((node) => { node.disabled = blocked; });
     ['namespace-form', 'agent-form'].forEach((id) => {
       $(id).querySelectorAll('input, textarea, select').forEach((node) => {
@@ -105,11 +114,13 @@
     state.dirty = value;
     $('namespace-unsaved').hidden = !value || state.editor?.type !== 'namespace';
     $('agent-unsaved').hidden = !value || state.editor?.type !== 'agent';
+    $('document-unsaved').hidden = !value || state.editor?.type !== 'document';
   }
   function closeEditor(force = false) {
     if (!force && state.mutationBusy) return false;
     if (!force && state.dirty && !window.confirm('有未保存的修改。确定放弃这些修改？')) return false;
-    ['namespace-dialog', 'agent-dialog'].forEach((id) => { if ($(id).open) $(id).close(); });
+    cancelRead('document-validation'); cancelRead('document-latest'); state.documentSequenceEdit++;
+    ['namespace-dialog', 'agent-dialog', 'document-dialog'].forEach((id) => { if ($(id).open) $(id).close(); });
     state.editor = null;
     dirty(false);
     $('namespace-form').reset();
@@ -119,6 +130,8 @@
     $('namespace-form-error').textContent = '';
     $('agent-form-error').textContent = '';
     $('agent-identity').textContent = '';
+    $('document-content').value = ''; $('document-error').textContent = '';
+    $('document-diff').replaceChildren(); $('document-latest').textContent = ''; $('document-conflict').hidden = true;
     return true;
   }
   function emptyRow(body, columns, message) {
@@ -140,7 +153,7 @@
       node.append(label); nav.append(node);
     }
     if (!matches.length) nav.append(element('p', query ? '没有匹配的空间' : '暂无空间', 'hint'));
-    for (const [id, view] of [['global-agents', 'agents'], ['nav-runtime', 'runtime'], ['nav-handoffs', 'handoffs'], ['nav-executions', 'executions']]) {
+    for (const [id, view] of [['global-agents', 'agents'], ['nav-runtime', 'runtime'], ['nav-documents', 'documents'], ['nav-diagnosis', 'diagnosis'], ['nav-handoffs', 'handoffs'], ['nav-executions', 'executions']]) {
       $(id).classList.toggle('active', state.view === view);
       if (state.view === view) $(id).setAttribute('aria-current', 'page');
       else $(id).removeAttribute('aria-current');
@@ -152,6 +165,8 @@
     $('agents-view').hidden = state.view !== 'agents';
     $('runtime-view').hidden = state.view !== 'runtime';
     $('browse-view').hidden = !['handoffs', 'executions'].includes(state.view);
+    $('knowledge-view').hidden = state.view !== 'documents';
+    $('diagnosis-view').hidden = state.view !== 'diagnosis';
     $('empty-view').hidden = !!namespace || state.view !== 'namespace';
     if (!namespace) return;
     $('namespace-title').textContent = namespace.name;
@@ -260,6 +275,7 @@
     state.previewSequence++;
     $('execution-detail').replaceChildren(); $('execution-detail').hidden = true;
     $('preview-raw').open = false;
+    $('preview-actions').replaceChildren(); state.previewData = null;
     if ($('preview-dialog').open) $('preview-dialog').close();
     ['preview-title', 'preview-path', 'preview-sha', 'preview-content', 'preview-note', 'preview-state'].forEach((id) => { $(id).textContent = ''; });
   }
@@ -271,7 +287,7 @@
     if (state.tab === 'content') await loadDocuments();
   }
   async function loadDocuments() {
-    if (!state.token || !currentNamespace()) return;
+    if (!state.authenticated || !currentNamespace()) return;
     const epoch = state.epoch; const sequence = ++state.documentSequence;
     state.documentsBusy = true;
     $('documents-body').setAttribute('aria-busy', 'true');
@@ -334,6 +350,19 @@
       $('preview-state').textContent = '';
       $('preview-content').textContent = execution ? JSON.stringify({ task: data.task, attempts: data.attempts }, null, 2) : data.content ?? '';
       if (execution) renderExecution(data);
+      else {
+        state.previewData = { ...data, namespace, path };
+        $('preview-note').textContent = `${data.editable ? '可在原空间编辑；身份和核验声明受保护。' : '只读原文；交接、日志或已归档空间使用专用流程。'} ${budgetText(data.budget)}`;
+        if (data.editable) {
+          const source = state.previewData;
+          $('preview-actions').append(button('编辑原文', () => openDocument(source, 'edit')));
+          if (data.kind !== 'template') $('preview-actions').append(button(data.status === 'ARCHIVED' ? '恢复到检索' : '归档退出检索', () => openDocument(source, data.status === 'ARCHIVED' ? 'restore' : 'archive')));
+        }
+        if (data.kind === 'template') {
+          const source = state.previewData;
+          $('preview-actions').append(button('检查生成文档结构', () => openTemplate(source)));
+        }
+      }
     } catch (error) {
       if (epoch === state.epoch && sequence === state.previewSequence) $('preview-state').textContent = errorText(error);
     }
@@ -404,15 +433,16 @@
     values.forEach((value) => { const option = element('option', statusLabel(value)); option.value = value; select.append(option); });
   }
   function populateSpaces() {
-    for (const id of ['runtime-namespace', 'browse-namespace']) {
+    for (const id of ['runtime-namespace', 'browse-namespace', 'knowledge-namespace', 'diagnosis-spaces']) {
       const select = $(id); const previous = select.value;
       select.replaceChildren();
-      if (id === 'runtime-namespace') { const all = element('option', '全部空间（全局）'); all.value = ''; select.append(all); }
+      if (id === 'runtime-namespace' || id === 'knowledge-namespace') { const all = element('option', '全部空间（全局）'); all.value = ''; select.append(all); }
       namespaces().forEach((space) => {
         const option = element('option', `${space.name} · ${space.id}${space.status === 'ARCHIVED' ? '（已归档）' : ''}`);
         option.value = space.id; select.append(option);
       });
-      select.value = [...select.options].some((option) => option.value === previous) ? previous : (id === 'runtime-namespace' ? '' : state.namespace || '');
+      select.value = [...select.options].some((option) => option.value === previous) ? previous : (['runtime-namespace','knowledge-namespace'].includes(id) ? '' : state.namespace || '');
+      if (id === 'diagnosis-spaces' && ![...select.options].some((o) => o.selected)) [...select.options].forEach((o) => { o.selected = o.value === 'shared'; });
     }
   }
   function clearRuntime() {
@@ -428,7 +458,11 @@
     $('browse-state').textContent = ''; $('browse-page-label').textContent = '';
     $('browse-previous').disabled = true; $('browse-next').disabled = true;
   }
-  function clearViewReads() { clearRuntime(); clearBrowse(); clearDocuments(); }
+  function clearViewReads() {
+    clearRuntime(); clearBrowse(); clearDocuments();
+    cancelRead('knowledge'); state.knowledgeSequence++; state.knowledgeBusy = false;
+    cancelRead('diagnosis'); state.diagnosisSequence++; $('diagnosis-submit').disabled = false;
+  }
   function configureBrowse() {
     const execution = state.view === 'executions';
     $('browse-title').textContent = execution ? '执行任务' : '最近交接';
@@ -456,19 +490,19 @@
     state.browsePages[state.view] = { ...state.browseFilters, offset: state.browseOffset };
     persistBrowse();
   }
-  const browseSessionKey = 'harness.console.browse.v1';
+  const browseSessionKey = () => `harness.console.browse.v1:${state.tenant}`;
   function persistBrowse() {
     if (['handoffs', 'executions'].includes(state.view) && state.browseFilters) {
       state.browsePages[state.view] = { ...state.browseFilters, offset: state.browseOffset };
     }
     try {
       // Only list filters enter session storage. Credentials and reports stay in memory.
-      window.sessionStorage.setItem(browseSessionKey, JSON.stringify({ namespace: state.namespace, pages: state.browsePages }));
+      window.sessionStorage.setItem(browseSessionKey(), JSON.stringify({ namespace: state.namespace, pages: state.browsePages }));
     } catch { /* Disabled browser storage still permits in-page navigation. */ }
   }
   function restoreBrowse() {
     try {
-      const saved = JSON.parse(window.sessionStorage.getItem(browseSessionKey) || 'null');
+      const saved = JSON.parse(window.sessionStorage.getItem(browseSessionKey()) || 'null');
       if (!saved || typeof saved !== 'object') return;
       if (typeof saved.namespace === 'string') state.namespace = saved.namespace;
       for (const view of ['handoffs', 'executions']) {
@@ -496,6 +530,7 @@
     if (state.view === 'runtime') await loadRuntime();
     else if (['handoffs', 'executions'].includes(state.view)) await loadBrowse();
     else if (state.view === 'namespace' && state.tab === 'content') await loadDocuments();
+    else if (state.view === 'documents') await loadKnowledge();
   }
   function metricCard(label, value, hint) {
     const card = element('article', undefined, 'metric-card');
@@ -524,6 +559,10 @@
     scope.append(element('p', `采集起点：${dateLabel(data.observed_since)}；全局采集健康：损坏事件 ${number(coverage.malformed_events)}，不可读文件 ${number(coverage.unreadable_files)}，本进程丢弃事件 ${number(coverage.dropped_events_this_process)}。`, 'scope-note'));
     if (metrics.observed_calls === 0) scope.append(element('p', '当前范围暂无采集数据；历史调用不会从旧日志补算。', 'hint'));
     content.append(scope);
+    const purposeNames = { task:'日常任务', maintenance:'维护', diagnostic:'诊断', unlabelled:'未标注（含历史）' };
+    content.append(element('h2','按调用用途观察'));
+    content.append(element('p',data.purpose_scope || '服务尚未返回用途数据，不从历史猜测。','hint'));
+    content.append(simpleTable('用途成本',['用途','调用','失败','处理总耗时','处理 P50','返回字符'],Object.entries(data.purpose_metrics || {}).map(([p,m])=>[purposeNames[p] || p,number(m.observed_calls),number(m.failures),number(m.handler_ms_total,' ms'),number(m.handler_ms_p50,' ms'),number(m.returned_characters)])));
     const summary = element('div', undefined, 'runtime-meta');
     const uptime = typeof data.uptime_seconds === 'number' ? `${number(Math.floor(data.uptime_seconds / 3600))} 小时 ${Math.floor(data.uptime_seconds % 3600 / 60)} 分钟` : '未观测';
     summary.append(element('span', sampleLabel(data)), element('span', `版本 ${data.version ?? '未知'}`), element('span', `已运行 ${uptime}`), element('span', `统计窗口 ${number(data.window_days, ' 天')}`));
@@ -584,14 +623,16 @@
     return `实际采样时间 ${dateLabel(report?.sample_at ?? report?.sampled_at)} · 缓存命中 ${typeof cache === 'boolean' ? (cache ? '是' : '否') : '未提供'} · 缓存年龄 ${number(report?.cache_age_seconds ?? report?.age_seconds, ' 秒')}`;
   }
   async function loadRuntime() {
-    if (!state.token || state.view !== 'runtime') return;
+    if (!state.authenticated || state.view !== 'runtime') return;
     clearRuntime();
     const epoch = state.epoch; const sequence = state.runtimeSequence;
     const query = new URLSearchParams({ days: $('runtime-days').value });
     const namespace = $('runtime-namespace').value;
     if (namespace) query.set('namespace', namespace);
+    const purpose = $('runtime-purpose').value;
+    if (purpose) query.set('purpose',purpose);
     const key = query.toString(); const cached = state.runtimeCache.get(key);
-    const scope = `${namespace || '全部空间'} · ${$('runtime-days').value} 天`;
+    const scope = `${namespace || '全部空间'} · ${$('runtime-days').value} 天${purpose ? ` · 用途 ${purpose}` : ''}`;
     const retained = cached ? { key, data: cached, scope } : state.runtimeDisplayed;
     if (retained) renderRuntime(retained.data); else $('runtime-content').replaceChildren();
     renderRoutingCached(namespace);
@@ -624,7 +665,7 @@
     content.append(resources, element('p', `${sampleLabel({ ...storage, ...report })}。${storage.disk_scope || ''}`, 'hint'));
   }
   async function loadStorage() {
-    if (!state.token || state.view !== 'runtime' || $('read-storage').disabled) return;
+    if (!state.authenticated || state.view !== 'runtime' || $('read-storage').disabled) return;
     const epoch = state.epoch; const sequence = ++state.storageSequence;
     const cached = state.storageReport;
     $('read-storage').disabled = true; $('storage-content').setAttribute('aria-busy', 'true');
@@ -696,7 +737,7 @@
     }
   }
   async function loadBrowse() {
-    if (!state.token || !['handoffs', 'executions'].includes(state.view)) return;
+    if (!state.authenticated || !['handoffs', 'executions'].includes(state.view)) return;
     clearBrowse(); clearPreview();
     const filter = state.browseFilters; const execution = state.view === 'executions';
     if (!filter?.namespace) {
@@ -740,6 +781,144 @@
     } finally {
       if (epoch === state.epoch && sequence === state.browseSequence) { state.browseBusy = false; $('browse-body').setAttribute('aria-busy', 'false'); }
     }
+  }
+  function budgetText(budget) {
+    if (!budget) return '';
+    return `预算 ${number(budget.used)} / ${number(budget.limit)} ${budget.unit === 'UTF-8 bytes' ? 'UTF-8 字节' : '正文字符'}${typeof budget.index_characters === 'number' ? `；专题索引 ${budget.index_characters} 字符` : ''}`;
+  }
+  async function loadKnowledge() {
+    if (!state.authenticated || state.view !== 'documents') return;
+    const epoch = state.epoch; const sequence = ++state.knowledgeSequence;
+    state.knowledgeBusy = true;
+    const query = new URLSearchParams({ kind:$('knowledge-kind').value || 'knowledge', limit:'20', offset:String(state.knowledgeOffset), sort:$('knowledge-sort').value });
+    for (const key of ['namespace','project','status']) if ($(`knowledge-${key}`).value.trim()) query.set(key,$(`knowledge-${key}`).value.trim());
+    if ($('knowledge-query').value.trim()) query.set('q',$('knowledge-query').value.trim());
+    $('knowledge-body').replaceChildren(); $('knowledge-state').textContent = '正在读取有界文档摘要…';
+    $('knowledge-previous').disabled = true; $('knowledge-next').disabled = true;
+    try {
+      const data = await request(`/admin/api/documents?${query}`,{group:'knowledge'});
+      if (epoch !== state.epoch || sequence !== state.knowledgeSequence) return;
+      const rows = list(data.documents);
+      state.knowledgeRemaining = data.remaining || 0;
+      for (const item of rows) {
+        const row = element('tr'); const identity = element('td');
+        identity.append(button(item.title || item.path,()=>preview(item.path,item.namespace),'text-link'),element('span',item.path,'hint mono'));
+        row.append(identity,element('td',`${names([item.namespace])} · ${item.namespace}`),element('td',`${kinds[item.kind] || item.kind} · ${statusLabel(item.status)}`),timeCell(item.updated_at));
+        $('knowledge-body').append(row);
+      }
+      if (!rows.length) emptyRow($('knowledge-body'),4,'暂无匹配知识文档；模板没有项目和状态字段。');
+      $('knowledge-page').textContent = `${state.knowledgeOffset + (rows.length ? 1 : 0)}–${state.knowledgeOffset + rows.length} / ${data.total || 0}`;
+      $('knowledge-state').textContent = '每页最多 20 份摘要；来源空间明确，点击查看或编辑。';
+      $('knowledge-previous').disabled = state.knowledgeOffset === 0; $('knowledge-next').disabled = !state.knowledgeRemaining;
+    } catch (error) {
+      if (epoch !== state.epoch || sequence !== state.knowledgeSequence) return;
+      $('knowledge-state').textContent = errorText(error);
+      $('knowledge-previous').disabled = state.knowledgeOffset === 0;
+    } finally { if (epoch === state.epoch && sequence === state.knowledgeSequence) state.knowledgeBusy = false; }
+  }
+  function openDocument(source, action) {
+    if (!state.fresh || state.pending || state.mutationBusy || !closeEditor()) return;
+    clearPreview();
+    state.editor = {type:'document', source, action, sha256:source.sha256, validated:null, conflict:false, latest:null, busy:false};
+    $('document-title').textContent = action === 'edit' ? '编辑原空间文档' : action === 'archive' ? '归档文档' : '恢复文档';
+    $('document-source').textContent = `${source.namespace} · ${source.path} · SHA-256 ${source.sha256}`;
+    $('document-budget').textContent = `${budgetText(source.budget)}；核验日期 ${source.verified_at || '未声明（模板无核验字段）'}`;
+    $('document-content').value = source.content || ''; $('document-content').readOnly = action !== 'edit';
+    $('document-error').textContent = action === 'archive' ? '归档会退出默认检索；若为项目入口，也会影响该项目下专题的召回。内容和原路径保留。' : action === 'restore' ? '恢复后参与默认检索；项目入口必须可用，专题才能被召回。' : '';
+    dirty(action !== 'edit'); updateControls();
+    $('document-dialog').showModal(); $('document-content').focus();
+  }
+  function documentPayload() {
+    const editor = state.editor;
+    if (editor?.type !== 'document') return null;
+    const payload = { namespace:editor.source.namespace,path:editor.source.path,action:editor.action,expected_sha256:editor.sha256 };
+    if (editor.action === 'edit') payload.content = $('document-content').value;
+    return payload;
+  }
+  function renderDiff(change) {
+    const section = element('section');
+    section.append(element('h3',`${change.namespace} · ${change.path}`),element('p',budgetText(change.budget),'hint'));
+    const before = (change.before || '').split('\n'); const after = (change.after || '').split('\n');
+    let prefix = 0; let suffix = 0;
+    while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+    while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
+    section.append(element('p',`保留相同开头 ${prefix} 行和结尾 ${suffix} 行；以下完整展示替换区间。`,'hint'));
+    section.append(element('h4','原版本中的替换区间'),element('pre',before.slice(prefix,before.length-suffix).join('\n') || '（空）','diff-before'));
+    section.append(element('h4','保存后的替换区间'),element('pre',after.slice(prefix,after.length-suffix).join('\n') || '（空）','diff-after'));
+    return section;
+  }
+  async function validateDocument() {
+    const editor = state.editor; const payload = documentPayload();
+    if (!payload || editor.busy || state.pending || editor.conflict) return;
+    const epoch = state.epoch; const sequence = ++state.documentSequenceEdit;
+    editor.busy = true; editor.validated = null; updateControls();
+    $('document-error').textContent = '正在验证当前 SHA、重建索引和全库关联；此操作不保存。'; $('document-diff').replaceChildren();
+    try {
+      const data = await request('/admin/api/document/preview',{method:'POST',body:JSON.stringify(payload),readBody:true,group:'document-validation'});
+      if (epoch !== state.epoch || sequence !== state.documentSequenceEdit || state.editor !== editor) return;
+      if (!data.validated || data.written !== false) throw new Error('无效预览响应');
+      if (JSON.stringify(payload) !== JSON.stringify(documentPayload())) return;
+      editor.validated = JSON.stringify(payload);
+      $('document-diff').replaceChildren(...list(data.changes).map(renderDiff));
+      $('document-error').textContent = '校验通过。请检查原文和自动索引差异，再确认保存。保存时仍会重新检查版本。';
+    } catch (error) {
+      if (epoch !== state.epoch || sequence !== state.documentSequenceEdit || state.editor !== editor) return;
+      if (error.status === 409) { editor.conflict = true; $('document-conflict').hidden = false; }
+      $('document-error').textContent = error.status === 409 ? '版本已变化，草稿保留。请读取最新原文并手动合并。' : errorText(error);
+    } finally {
+      if (state.editor === editor) { editor.busy = false; updateControls(); }
+    }
+  }
+  async function readLatestDocument() {
+    const editor = state.editor;
+    if (editor?.type !== 'document' || editor.busy || state.pending || state.mutationBusy) return;
+    const epoch = state.epoch; editor.busy = true; updateControls();
+    try {
+      const data = await request(`/admin/api/document?${new URLSearchParams({namespace:editor.source.namespace,path:editor.source.path})}`,{group:'document-latest'});
+      if (epoch !== state.epoch || state.editor !== editor) return;
+      editor.latest = data;
+      $('document-latest').textContent = `最新 SHA-256 ${data.sha256}\n\n${data.content}`;
+      $('document-error').textContent = '上方仍是你的草稿。手动合并后，点击“使用最新 SHA”更新基线；不会自动覆盖草稿。';
+    } catch (error) { if (state.editor === editor && epoch === state.epoch) $('document-error').textContent = errorText(error); }
+    finally { if (state.editor === editor) { editor.busy = false; updateControls(); } }
+  }
+  async function diagnose() {
+    const spaces = [...$('diagnosis-spaces').options].filter((o)=>o.selected).map((o)=>o.value);
+    if (!spaces.length || spaces.length > 8) { $('diagnosis-state').textContent = '请选择 1–8 个读取空间。'; return; }
+    const epoch = state.epoch; const sequence = ++state.diagnosisSequence;
+    $('diagnosis-submit').disabled = true; $('diagnosis-state').textContent = '正在按所选空间诊断…'; $('diagnosis-result').replaceChildren();
+    try {
+      const data = await request('/admin/api/route',{method:'POST',readBody:true,group:'diagnosis',body:JSON.stringify({read_namespaces:spaces,project:$('diagnosis-project').value.trim(),scenario:$('diagnosis-scenario').value})});
+      if (epoch !== state.epoch || sequence !== state.diagnosisSequence) return;
+      const explanation = data.explanation || {};
+      $('diagnosis-state').textContent = data.mode === 'SKIP' ? 'daily 完全跳过。' : `结果 ${data.route_outcome}；候选 ${data.topic_count}；明确背景条目忽略 ${explanation.ignored_background_clauses || 0}；本次未保存问题。`;
+      $('diagnosis-result').append(element('p',`读取空间：${names(data.read_namespaces || spaces)}`,'hint'));
+      $('diagnosis-result').append(simpleTable('候选排序依据',['专题 / 空间','得分 / 符号亲和','是否加载','命中字段'],list(explanation.candidates).map((c)=>[`${c.topic_id} · ${c.namespace}`,`${c.score} / ${c.symbol_affinity}`,c.selected?'是':'否',list(c.matches).map((m)=>`${m.field}: ${m.term} (+${m.weight})`).join('；')])));
+      $('diagnosis-result').append(element('p',`最多展示 ${explanation.candidate_limit || 20} 个候选及每项 16 个命中依据；完整候选数 ${explanation.candidate_total ?? 0}。`,'hint'));
+      $('diagnosis-result').append(simpleTable('计划加载正文',['空间 / 路径','请求正文时返回字符数'],list(explanation.loaded).map((m)=>[`${m.namespace} · ${m.path}`,number(m.returned_characters_if_content)])));
+    } catch (error) { if (epoch === state.epoch && sequence === state.diagnosisSequence) $('diagnosis-state').textContent = errorText(error); }
+    finally { if (epoch === state.epoch && sequence === state.diagnosisSequence) $('diagnosis-submit').disabled = false; }
+  }
+  function openTemplate(source) {
+    clearPreview(); state.template = source; state.templateSequence++; $('template-result').textContent = ''; $('template-document').value = '';
+    $('template-state').textContent = ''; $('template-source').textContent = `${source.namespace} · ${source.path}`;
+    $('template-check').disabled = false; $('template-dialog').showModal();
+  }
+  function closeTemplate() {
+    cancelRead('template-check'); state.templateSequence++; state.template = null;
+    $('template-dialog').close(); $('template-document').value = ''; $('template-result').textContent = ''; $('template-state').textContent = '';
+  }
+  async function checkTemplate() {
+    if (!state.template || $('template-check').disabled) return;
+    const epoch = state.epoch; const sequence = ++state.templateSequence;
+    $('template-check').disabled = true; $('template-state').textContent = '正在检查结构，不保存输入文档…';
+    try {
+      const data = await request('/admin/api/check-template',{method:'POST',readBody:true,group:'template-check',body:JSON.stringify({namespace:state.template.namespace,path:state.template.path,document:$('template-document').value})});
+      if (epoch !== state.epoch || sequence !== state.templateSequence) return;
+      $('template-state').textContent = data.passed ? '结构检查通过；内容正确性仍需判断。' : '结构检查未通过，请查看缺失项。';
+      $('template-result').textContent = JSON.stringify(data,null,2);
+    } catch (error) { if (epoch === state.epoch && sequence === state.templateSequence) $('template-state').textContent = errorText(error); }
+    finally { if (epoch === state.epoch && sequence === state.templateSequence) $('template-check').disabled = false; }
   }
   function openNamespace(create) {
     if (!state.fresh || state.pending || state.mutationBusy || !closeEditor()) return;
@@ -805,7 +984,7 @@
   async function submitMutation(method, path, payload, label) {
     if (state.pending || state.mutationBusy || !state.fresh) return;
     if (typeof crypto.randomUUID !== 'function') {
-      const target = state.editor?.type === 'agent' ? $('agent-form-error') : $('namespace-form-error');
+      const target = state.editor?.type === 'document' ? $('document-error') : state.editor?.type === 'agent' ? $('agent-form-error') : $('namespace-form-error');
       target.textContent = '浏览器不支持安全 UUID，请使用 HTTPS 或 localhost 上的现代浏览器。';
       return;
     }
@@ -813,10 +992,10 @@
     await sendPending();
   }
   async function sendPending() {
-    if (!state.pending || state.mutationBusy) return;
+    if (!state.authenticated || !state.pending || state.mutationBusy) return;
     const operation = state.pending; const epoch = state.epoch;
     state.mutationBusy = true; notice('正在提交…'); updateControls();
-    const formError = state.editor?.type === 'agent' ? $('agent-form-error') : $('namespace-form-error');
+    const formError = state.editor?.type === 'document' ? $('document-error') : state.editor?.type === 'agent' ? $('agent-form-error') : $('namespace-form-error');
     formError.textContent = '';
     try {
       await request(operation.path, operation);
@@ -830,18 +1009,29 @@
     } catch (error) {
       if (epoch !== state.epoch) return;
       if (error.status === 409) {
-        state.pending = null; state.fresh = false;
+        state.pending = null;
+        if (state.editor?.type === 'document') {
+          state.editor.conflict = true; state.editor.validated = null; state.editor.latest = null;
+          $('document-conflict').hidden = false;
+          formError.textContent = '版本冲突，草稿保留。读取最新原文并手动合并后重新预览。';
+          notice('文档保存未成功，草稿仍保留在编辑器中。',true);
+          return;
+        }
+        state.fresh = false;
         closeEditor(true); clearViewReads();
         await loadOverview();
         if (epoch !== state.epoch) return;
         notice(state.fresh ? '版本冲突：已加载最新数据，旧表单已关闭。请重新打开编辑，审阅后再保存。' : '版本冲突：旧表单已关闭，最新数据尚未加载。请刷新后重新审阅并编辑。', true);
         if (state.fresh) await loadCurrentView();
+      } else if (error.status === 401) {
+        state.fresh = false;
+        formError.textContent = errorText(error);
       } else if (error.status && error.status < 500) {
         state.pending = null;
         formError.textContent = errorText(error); notice(errorText(error), true);
       } else {
         state.fresh = false; connection('结果未确认', 'offline');
-        closeEditor(true);
+        if (state.editor?.type !== 'document') closeEditor(true);
         notice('请求结果未知，原始请求与幂等键已保留。请显式重试确认结果。', true);
       }
     } finally {
@@ -855,18 +1045,22 @@
     const refreshed = await loadOverview();
     if (refreshed) await loadCurrentView();
   }
-  function logout(preserveBrowse = false) {
+  function resetLocal(preserveBrowse = false) {
     if (!preserveBrowse) {
-      try { window.sessionStorage.removeItem(browseSessionKey); } catch { /* Storage may be disabled. */ }
+      try { window.sessionStorage.removeItem(browseSessionKey()); } catch { /* Storage may be disabled. */ }
     }
     state.epoch++;
     controllers.forEach((controller) => controller.abort()); controllers.clear();
     readControllers.clear();
-    state.token = ''; state.overview = null; state.namespace = null; state.pending = null;
+    state.authenticated = false; state.reauth = false; state.resumeDialog = null; state.overview = null; state.namespace = null; state.pending = null;
     state.fresh = false; state.mutationBusy = false; state.view = 'runtime'; state.tab = 'content';
     state.offset = 0; state.kind = ''; state.project = ''; state.query = ''; state.status = ''; state.sort = 'path'; state.total = 0; state.remaining = 0;
     state.browseOffset = 0; state.browseFilters = null; state.browsePages = {};
     state.runtimeCache.clear(); state.runtimeDisplayed = null; state.routingCache.clear(); state.storageReport = null;
+    state.knowledgeOffset = 0; state.knowledgeRemaining = 0;
+    $('knowledge-body').replaceChildren(); $('knowledge-state').textContent = ''; $('knowledge-page').textContent = '';
+    $('knowledge-filters').reset(); $('diagnosis-form').reset(); $('diagnosis-result').replaceChildren(); $('diagnosis-state').textContent = '';
+    closeTemplate();
     ['runtime-content', 'storage-content', 'routing-content'].forEach((id) => $(id).replaceChildren());
     ['runtime-state', 'storage-state', 'routing-state'].forEach((id) => { $(id).textContent = ''; });
     $('read-storage').textContent = '读取磁盘容量';
@@ -878,40 +1072,169 @@
     renderNavigation(); renderNamespace();
     $('workspace').hidden = true; $('login-view').hidden = false;
     $('refresh').hidden = true; $('logout').hidden = true;
-    $('login-submit').disabled = false; $('admin-token').disabled = false;
-    connection('未连接'); updateControls(); $('admin-token').focus();
+    $('active-tenant').hidden = true; $('active-tenant').textContent = '';
+    $('admin-tenant').value = state.tenant; $('login-state').textContent = '';
+    authControls(false);
+    connection('未连接'); updateControls();
   }
 
+  function authControls(busy) {
+    const token = $('token-mode').checked;
+    $('login-submit').disabled = busy;
+    $('logout').disabled = busy;
+    $('admin-tenant').disabled = busy || state.reauth;
+    $('token-mode').disabled = busy;
+    $('remember-login').disabled = busy;
+    $('password-fields').hidden = token;
+    $('token-fields').hidden = !token;
+    for (const id of ['admin-username', 'admin-password']) { $(id).disabled = busy || token; $(id).required = !token; }
+    $('admin-token').disabled = busy || !token; $('admin-token').required = !!token;
+  }
+  function requireLogin() {
+    state.authenticated = false; state.reauth = true; state.fresh = false;
+    if (state.editor?.type === 'document') state.editor.validated = null;
+    for (const id of ['namespace-dialog', 'agent-dialog', 'document-dialog', 'template-dialog', 'preview-dialog']) {
+      if ($(id).open) { state.resumeDialog = id; $(id).close(); }
+    }
+    $('workspace').hidden = true; $('login-view').hidden = false;
+    $('refresh').hidden = true;
+    $('login-error').textContent = '会话已过期，请重新登录。草稿与待确认请求保留在此页面；请勿刷新。';
+    authControls(false); updateControls(); connection('需要登录'); $('admin-password').focus();
+  }
+  async function enterWorkspace() {
+    const epoch = state.epoch;
+    state.authenticated = true;
+    const success = await loadOverview();
+    if (epoch !== state.epoch) return;
+    if (!success || !state.authenticated) {
+      state.authenticated = false;
+      $('login-error').textContent = $('notice').textContent || '登录后读取失败，请重试连接。';
+      return;
+    }
+    $('login-view').hidden = true; $('workspace').hidden = false;
+    $('refresh').hidden = false; $('logout').hidden = false;
+    $('active-tenant').textContent = state.tenant ? `租户 ${state.tenant}` : '单租户';
+    $('active-tenant').title = $('active-tenant').textContent;
+    $('active-tenant').hidden = false;
+    $('login-error').textContent = ''; $('login-state').textContent = '';
+    if (state.reauth) {
+      state.reauth = false;
+      if (state.resumeDialog) $(state.resumeDialog).showModal();
+      state.resumeDialog = null; updateControls();
+      notice(state.pending ? '已重新登录。请重试原请求以确认结果。' : '已重新登录，草稿已保留。保存前请重新校验。');
+    } else {
+      $('main').focus(); await loadCurrentView();
+    }
+  }
+  async function resumeSession() {
+    const epoch = state.epoch;
+    let hint = '';
+    authControls(true); $('login-state').textContent = '正在检查登录状态…';
+    try {
+      const session = await request('/admin/api/session', { group: 'session' });
+      if (epoch !== state.epoch) return;
+      if (session.authenticated !== true) throw new Error('无效会话');
+      await enterWorkspace();
+    } catch (error) {
+      if (epoch !== state.epoch) return;
+      if (error.status === 404) {
+        if (state.tenant) $('login-error').textContent = '未找到该租户，请核对租户 ID 与服务地址。';
+        else hint = '多租户服务请先填写租户 ID，独立服务可留空。';
+      } else if (error.status !== 401) $('login-error').textContent = errorText(error);
+    } finally {
+      if (epoch === state.epoch) { $('login-state').textContent = hint; authControls(false); }
+    }
+  }
+  function rememberTenant(tenant) {
+    state.tenant = tenant;
+    try { window.localStorage.setItem('harness.console.tenant', tenant); } catch { /* Optional preference only. */ }
+  }
   $('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     if ($('login-submit').disabled) return;
-    state.token = $('admin-token').value.trim(); $('admin-token').value = '';
-    if (!state.token) { $('login-error').textContent = '请输入管理员令牌。'; return; }
+    const tenant = $('admin-tenant').value.trim();
+    if (tenant && !/^[a-z0-9][a-z0-9-]{0,127}$/.test(tenant)) { $('login-error').textContent = '租户 ID 格式无效。'; return; }
+    if (state.reauth && tenant !== state.tenant) { $('login-error').textContent = '请先在原租户完成草稿或待确认请求。'; return; }
+    rememberTenant(tenant);
+    const tokenMode = $('token-mode').checked;
+    const bearer = tokenMode ? $('admin-token').value.trim() : '';
+    const password = tokenMode ? '' : $('admin-password').value;
+    const username = $('admin-username').value.trim();
+    $('admin-token').value = ''; $('admin-password').value = '';
+    if (tokenMode ? !bearer : !username || !password) { $('login-error').textContent = tokenMode ? '请输入管理员令牌。' : '请输入用户名和密码。'; return; }
     const epoch = state.epoch;
-    $('login-submit').disabled = true; $('admin-token').disabled = true; $('login-error').textContent = '';
-    const success = await loadOverview();
-    if (epoch !== state.epoch) return;
-    if (!success) {
-      const message = $('notice').textContent;
-      logout(); $('login-error').textContent = message; return;
+    authControls(true); $('login-error').textContent = ''; $('login-state').textContent = '正在登录…';
+    try {
+      const session = await request('/admin/api/login', { method: 'POST', bearer, readBody: true, body: JSON.stringify({ ...(tokenMode ? {} : { username, password }), remember: !!$('remember-login').checked }) });
+      if (epoch !== state.epoch) return;
+      if (session.authenticated !== true) throw new Error('无效会话');
+      await enterWorkspace();
+    } catch (error) {
+      if (epoch === state.epoch) $('login-error').textContent = error.status === 401 ? '用户名、密码或管理员令牌无效。' : errorText(error);
+    } finally {
+      if (epoch === state.epoch) { $('login-state').textContent = ''; authControls(false); }
     }
-    $('login-view').hidden = true; $('workspace').hidden = false;
-    $('refresh').hidden = false; $('logout').hidden = false; $('main').focus();
-    await loadCurrentView();
   });
-  $('logout').addEventListener('click', () => {
+  $('token-mode').addEventListener('change', () => { $('admin-password').value = ''; $('admin-token').value = ''; authControls(false); });
+  $('admin-tenant').addEventListener('change', () => {
+    if (state.reauth) { $('admin-tenant').value = state.tenant; return; }
+    const tenant = $('admin-tenant').value.trim();
+    if (tenant && !/^[a-z0-9][a-z0-9-]{0,127}$/.test(tenant)) return;
+    resetLocal(true); rememberTenant(tenant); $('admin-tenant').value = tenant; restoreBrowse(); resumeSession();
+  });
+  $('logout').addEventListener('click', async () => {
     if ((state.dirty || state.pending || state.mutationBusy) && !window.confirm('退出将清除未保存表单和待重试请求。已发送的写入仍可能完成，确定退出？')) return;
-    logout();
+    if ($('logout').disabled) return;
+    $('logout').disabled = true;
+    try {
+      await request('/admin/api/logout', { method: 'POST', body: '{}' });
+      resetLocal(); $('admin-username').focus();
+    } catch (error) {
+      notice('退出尚未确认，请恢复连接后重试。服务器会话可能仍有效。', true);
+      if (!state.authenticated) $('login-error').textContent = '退出尚未确认，请恢复连接后重试。';
+    } finally { $('logout').disabled = false; }
   });
   $('refresh').addEventListener('click', refresh);
   $('namespace-search').addEventListener('input', renderNavigation);
   $('create-namespace').addEventListener('click', () => openNamespace(true));
   $('edit-namespace').addEventListener('click', () => openNamespace(false));
   $('global-agents').addEventListener('click', () => selectView('agents'));
-  for (const view of ['runtime', 'handoffs', 'executions']) $(`nav-${view}`).addEventListener('click', () => selectView(view));
+  for (const view of ['runtime', 'documents', 'diagnosis', 'handoffs', 'executions']) $(`nav-${view}`).addEventListener('click', () => selectView(view));
   $('read-storage').addEventListener('click', loadStorage);
   $('runtime-filters').addEventListener('submit', (event) => { event.preventDefault(); loadRuntime(); });
-  ['runtime-namespace', 'runtime-days'].forEach((id) => $(id).addEventListener('change', () => $('runtime-filters').requestSubmit()));
+  ['runtime-namespace', 'runtime-days', 'runtime-purpose'].forEach((id) => $(id).addEventListener('change', () => $('runtime-filters').requestSubmit()));
+  $('knowledge-filters').addEventListener('submit',(event)=>{event.preventDefault();state.knowledgeOffset=0;loadKnowledge();});
+  $('knowledge-previous').addEventListener('click',()=>{if (!state.knowledgeBusy && state.knowledgeOffset) {state.knowledgeOffset=Math.max(0,state.knowledgeOffset-20);loadKnowledge();}});
+  $('knowledge-next').addEventListener('click',()=>{if (!state.knowledgeBusy && state.knowledgeRemaining) {state.knowledgeOffset+=20;loadKnowledge();}});
+  $('diagnosis-form').addEventListener('submit',(event)=>{event.preventDefault();diagnose();});
+  $('document-content').addEventListener('input',()=>{
+    if (state.editor?.type !== 'document') return;
+    dirty(); state.editor.validated = null; $('document-diff').replaceChildren(); updateControls();
+  });
+  $('document-preview').addEventListener('click',validateDocument);
+  $('document-read-latest').addEventListener('click',readLatestDocument);
+  $('document-use-latest').addEventListener('click',()=>{
+    const editor=state.editor;
+    if (editor?.type !== 'document' || !editor.latest || state.pending || state.mutationBusy) return;
+    editor.sha256=editor.latest.sha256; editor.source=editor.latest; editor.latest=null; editor.conflict=false; editor.validated=null;
+    $('document-conflict').hidden=true; $('document-latest').textContent='';
+    $('document-source').textContent=`${editor.source.namespace} · ${editor.source.path} · SHA-256 ${editor.sha256}`;
+    $('document-error').textContent='已更新基线。请重新校验并预览合并后的差异。'; updateControls();
+  });
+  $('document-save').addEventListener('click',async()=>{
+    const payload=documentPayload();
+    if (!payload || state.editor?.validated !== JSON.stringify(payload) || state.editor.conflict) return;
+    await submitMutation('PUT','/admin/api/document',payload,'文档更新');
+  });
+  $('template-check').addEventListener('click',checkTemplate);
+  $('template-document').addEventListener('input',()=>{
+    cancelRead('template-check'); state.templateSequence++; $('template-check').disabled=false;
+    $('template-result').textContent=''; $('template-state').textContent='文档已修改，需重新检查结构。';
+  });
+  $('diagnosis-form').addEventListener('input',()=>{
+    cancelRead('diagnosis'); state.diagnosisSequence++; $('diagnosis-submit').disabled=false;
+    $('diagnosis-result').replaceChildren(); $('diagnosis-state').textContent='条件已修改，请重新诊断。';
+  });
   $('browse-filters').addEventListener('submit', (event) => {
     event.preventDefault(); captureBrowseFilters(); state.browseOffset = 0; persistBrowse(); loadBrowse();
   });
@@ -987,9 +1310,10 @@
     await submitMutation('PUT', `/admin/api/agents/${encodeURIComponent(state.editor.id)}`, payload, 'Agent 权限更新');
   });
   document.querySelectorAll('[data-close]').forEach((node) => node.addEventListener('click', () => {
-    if (node.dataset.close === 'preview-dialog') clearPreview(); else closeEditor();
+    if (node.dataset.close === 'preview-dialog') clearPreview(); else if (node.dataset.close === 'template-dialog') closeTemplate(); else closeEditor();
   }));
-  ['namespace-dialog', 'agent-dialog'].forEach((id) => $(id).addEventListener('cancel', (event) => { event.preventDefault(); closeEditor(); }));
+  ['namespace-dialog', 'agent-dialog', 'document-dialog'].forEach((id) => $(id).addEventListener('cancel', (event) => { event.preventDefault(); closeEditor(); }));
+  $('template-dialog').addEventListener('cancel',(event)=>{event.preventDefault();closeTemplate();});
   $('preview-dialog').addEventListener('cancel', (event) => { event.preventDefault(); clearPreview(); });
   $('retry-mutation').addEventListener('click', sendPending);
   $('abandon-mutation').addEventListener('click', async () => {
@@ -1001,9 +1325,11 @@
     rememberBrowse();
     if (state.dirty || state.pending || state.mutationBusy) { event.preventDefault(); event.returnValue = ''; }
   });
-  window.addEventListener('offline', () => { if (state.token) { connection('网络已断开', 'offline'); notice('网络已断开。当前数据可能过期，恢复连接后请手动刷新。', true); } });
-  window.addEventListener('online', () => { if (state.token) { connection('网络已恢复，待刷新'); notice('网络已恢复，请点击刷新获取最新数据。'); } });
+  window.addEventListener('offline', () => { if (state.authenticated) { connection('网络已断开', 'offline'); notice('网络已断开。当前数据可能过期，恢复连接后请手动刷新。', true); } });
+  window.addEventListener('online', () => { if (state.authenticated) { connection('网络已恢复，待刷新'); notice('网络已恢复，请点击刷新获取最新数据。'); } });
   setStatuses($('status-filter'), documentStatuses);
-  logout(true);
+  try { const tenant = window.localStorage.getItem('harness.console.tenant') || ''; if (/^[a-z0-9][a-z0-9-]{0,127}$/.test(tenant)) state.tenant = tenant; } catch { /* Storage may be disabled. */ }
+  resetLocal(true);
   restoreBrowse();
+  resumeSession();
 })();

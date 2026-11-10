@@ -150,6 +150,22 @@ label {
   gap:12px;
   font-size:19px;
   font-weight:700;
+  min-width:0;
+}
+.brand-label {
+  display:block;
+  min-width:0;
+}
+.tenant-context {
+  display:block;
+  max-width:360px;
+  margin-top:4px;
+  color:var(--blue);
+  font-size:12px;
+  font-weight:550;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 .brand small {
   font-weight:400;
@@ -163,11 +179,13 @@ label {
   border-radius:10px;
   padding:6px 12px;
   font-size:22px;
+  flex-shrink:0;
 }
 .top-actions {
   display:flex;
   gap:10px;
   align-items:center;
+  flex-shrink:0;
 }
 .top-actions button {
   padding:7px 12px;
@@ -217,6 +235,37 @@ label {
 }
 .login-card button {
   margin:16px 0;
+}
+.login-card .optional {
+  color:var(--muted);
+  font-size:12px;
+  font-weight:400;
+}
+.login-card .check-label {
+  display:flex;
+  align-items:center;
+  gap:9px;
+  margin:22px 0 8px;
+  font-size:13px;
+  cursor:pointer;
+}
+.login-card input[type="checkbox"] {
+  width:17px;
+  height:17px;
+  margin:0;
+  accent-color:var(--blue);
+}
+.login-hint {
+  margin:0 0 20px;
+}
+.login-advanced {
+  border-top:1px solid var(--line);
+  padding-top:18px;
+}
+.login-advanced summary {
+  color:var(--muted);
+  font-size:12px;
+  cursor:pointer;
 }
 .error-text {
   color:var(--red);
@@ -970,6 +1019,18 @@ fieldset label {
 #execution-detail h2 { margin-top:24px; }
 .preview-dialog summary { cursor:pointer; line-height:1.7; }
 .document-raw>summary { display:none; }
+.document-dialog { width:min(1120px,94vw); max-height:92vh; overflow:auto; }
+.document-dialog textarea { width:100%; box-sizing:border-box; font:13px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace; tab-size:2; }
+.document-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:42vh; overflow:auto; padding:14px; border:1px solid var(--line); border-radius:8px; font-size:12px; }
+.document-diff section { margin:24px 0; border-top:1px solid var(--line); padding-top:12px; }
+.diff-before { background:#fff1f0; color:#7c2525; }
+.diff-after { background:#edf9f0; color:#20552d; }
+.diagnosis-form { max-width:780px; display:grid; gap:12px; }
+.diagnosis-form select[multiple] { height:auto; min-height:110px; }
+#preview-actions { margin:12px 0; flex-wrap:wrap; }
+#knowledge-body td:first-child { min-width:220px; }
+#knowledge-body td:nth-child(2) { overflow-wrap:anywhere; max-width:260px; }
+#document-source,#template-source { overflow-wrap:anywhere; }
 @media(max-width:620px) {
   .execution-fields { grid-template-columns:1fr; gap:4px; }
   .execution-fields dd { margin-bottom:10px; }

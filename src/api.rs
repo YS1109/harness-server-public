@@ -28,6 +28,7 @@ pub(crate) struct App {
     pub(crate) store: Arc<Mutex<Store>>,
     pub(crate) principals: Arc<Vec<Principal>>,
     pub(crate) admin_hash: Option<String>,
+    pub(crate) admin_sessions: Arc<crate::admin_session::AdminSessions>,
     pub(crate) metrics: Arc<crate::metrics::Ledger>,
     pub(crate) capacity: Arc<crate::admin::StorageCache>,
 }
@@ -75,9 +76,28 @@ pub fn router_with_principals(store: Store, principals: Vec<Principal>) -> Resul
     router_with_admin(store, principals, None)
 }
 pub fn router_with_admin(
+    store: Store,
+    principals: Vec<Principal>,
+    admin_token: Option<String>,
+) -> Result<Router> {
+    router_with_admin_login(store, principals, admin_token, None)
+}
+
+pub fn router_with_admin_login(
+    store: Store,
+    principals: Vec<Principal>,
+    admin_token: Option<String>,
+    admin_login: Option<crate::admin_session::LoginConfig>,
+) -> Result<Router> {
+    let admin_sessions = crate::admin_session::AdminSessions::new(admin_login)?;
+    router_with_admin_sessions(store, principals, admin_token, admin_sessions)
+}
+
+pub(crate) fn router_with_admin_sessions(
     mut store: Store,
     mut principals: Vec<Principal>,
     admin_token: Option<String>,
+    admin_sessions: crate::admin_session::AdminSessions,
 ) -> Result<Router> {
     auth::validate(&mut principals)?;
     let admin_hash = admin_token
@@ -92,12 +112,17 @@ pub fn router_with_admin(
             Ok(hash)
         })
         .transpose()?;
-    registry::initialize(&mut store, &principals, admin_hash.is_some())?;
+    registry::initialize(
+        &mut store,
+        &principals,
+        admin_hash.is_some() || admin_sessions.password_enabled(),
+    )?;
     let ledger = crate::metrics::Ledger::new(store.root());
     let app = App {
         store: Arc::new(Mutex::new(store)),
         principals: Arc::new(principals),
         admin_hash,
+        admin_sessions: Arc::new(admin_sessions),
         metrics: Arc::new(ledger),
         capacity: Arc::new(crate::admin::StorageCache::default()),
     };
@@ -110,6 +135,7 @@ pub fn router_with_admin(
         .route("/v1/namespaces", get(discovery))
         .route("/v1/route", post(route))
         .route("/v1/eval-routing", post(eval_routing))
+        .route("/v1/check-template", post(check_template))
         .route("/v1/start", post(start))
         .route("/v1/finish", post(finish))
         .route("/v1/abort", post(abort))
@@ -145,7 +171,18 @@ pub fn router_with_admin(
     Ok(Router::new()
         .route("/healthz", get(|| async { Json(json!({"status":"ok"})) }))
         .merge(private)
-        .merge(admin))
+        .merge(admin)
+        .layer(middleware::from_fn(reject_unhandled_tenant)))
+}
+
+/// A selector must be consumed by the tenant gateway before a store router runs.
+/// Rejecting it here prevents a configured client from silently using the legacy store.
+async fn reject_unhandled_tenant(req: Request<Body>, next: Next) -> Response {
+    if req.headers().contains_key("X-Harness-Tenant") {
+        return Error::Forbidden("此入口未启用租户路由；请核对服务和租户配置".into())
+            .into_response();
+    }
+    next.run(req).await
 }
 async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next) -> Response {
     let scoped_v2 = req.uri().path().starts_with("/v2/scoped/");
@@ -203,6 +240,9 @@ async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next
             return Err(invalid("读取范围必须唯一，最多8个namespace"));
         }
         let access = Access {
+            purpose: read_header("X-Harness-Purpose")?
+                .map(crate::metrics::Purpose::parse)
+                .transpose()?,
             protocol: if scoped_v2 { "scoped-v2" } else { "v1" }.into(),
             agent_id: principal.agent_id.clone(),
             namespace: ns.clone(),
@@ -214,7 +254,10 @@ async fn authenticate(State(app): State<App>, mut req: Request<Body>, next: Next
         };
         if logical_path != "/v1/namespaces" {
             let write = req.method() != axum::http::Method::GET
-                && !matches!(logical_path.as_str(), "/v1/route" | "/v1/eval-routing");
+                && !matches!(
+                    logical_path.as_str(),
+                    "/v1/route" | "/v1/eval-routing" | "/v1/check-template"
+                );
             let handoff = matches!(logical_path.as_str(), "/v1/finish" | "/v1/abort");
             if !(handoff && requested.is_none()) {
                 registry::ensure(&store.state.documents, &access, write)?;
@@ -427,6 +470,7 @@ async fn execute(
                 )
             });
             app.metrics.record(&crate::metrics::Event {
+                purpose: access.purpose,
                 protocol:Some(access.protocol.clone()), execution_group_id:response.and_then(|v|v["execution_group_id"].as_str()).or_else(||value["execution_group_id"].as_str()).filter(|id|crate::document::slug(id).is_ok()).map(str::to_owned),
                 lock_wait_ms, operation_ms, commit_ms,
                 event_id:Some(uuid::Uuid::new_v4().to_string()), service_version:Some(env!("CARGO_PKG_VERSION").into()),
@@ -531,6 +575,7 @@ async fn health(
 pub(crate) struct StatsQuery {
     pub days: Option<u32>,
     pub project: Option<String>,
+    pub purpose: Option<String>,
 }
 pub(crate) fn stats_days(days: Option<u32>) -> Result<u32> {
     let days = days.unwrap_or(30);
@@ -548,7 +593,13 @@ async fn stats(
     let q = StatsQuery {
         days: q.days,
         project: q.project.filter(|p| !p.is_empty()),
+        purpose: q.purpose.filter(|p| !p.is_empty()),
     };
+    let purpose = q
+        .purpose
+        .as_deref()
+        .map(crate::metrics::Purpose::parse)
+        .transpose()?;
     if let Some(p) = &q.project {
         crate::document::slug(p)?;
     }
@@ -557,10 +608,11 @@ async fn stats(
             let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
             registry::ensure(&store.state.documents, &access, false)?;
         }
-        let mut report = app.metrics.report(
+        let mut report = app.metrics.report_filtered(
             days,
             Some(&access.namespace),
             q.project.as_deref(),
+            purpose,
             chrono::Utc::now(),
         );
         report["identity"] = json!({"agent_id":access.agent_id,"namespace":access.namespace});
@@ -766,4 +818,42 @@ async fn eval_routing(
     })
     .await
     .map_err(|_| invalid("路由评测失败"))?
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemplateCheck {
+    path: String,
+    document: String,
+}
+async fn check_template(
+    State(app): State<App>,
+    Extension(access): Extension<Access>,
+    Json(q): Json<TemplateCheck>,
+) -> Result<Json<Value>> {
+    if q.path.starts_with("namespaces/") || crate::document::path_kind(&q.path)? != "template" {
+        return Err(invalid("check-template要求逻辑模板路径"));
+    }
+    tokio::task::spawn_blocking(move || {
+        let template = {
+            let store = app.store.lock().map_err(|_| invalid("存储锁不可用"))?;
+            registry::ensure(&store.state.documents, &access, false)?;
+            let documents = namespace::view(
+                &store.state.documents,
+                &access.namespace,
+                access.inherit_shared,
+            );
+            let mut item = engine::get(&documents, &q.path)?;
+            namespace::annotate(&mut item, &store.state.documents, &access.namespace);
+            item
+        };
+        let mut report =
+            crate::template_check::check(template["content"].as_str().unwrap_or(""), &q.document)?;
+        report["template"] =
+            json!({"namespace":template["namespace"],"path":q.path,"sha256":template["sha256"]});
+        report["identity"] = json!({"agent_id":access.agent_id,"namespace":access.namespace});
+        Ok(Json(report))
+    })
+    .await
+    .map_err(|_| invalid("模板结构检查失败"))?
 }

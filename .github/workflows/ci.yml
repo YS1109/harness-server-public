@@ -56,7 +56,7 @@ jobs:
             --retry-delay 1 --max-time 2 http://127.0.0.1:18080/healthz
           docker exec harness-ci harness --url http://127.0.0.1:8080 health
           docker exec harness-ci harness-backup --version
-          docker exec harness-ci harness --url http://127.0.0.1:8080 start \
+          docker exec harness-ci harness --url http://127.0.0.1:8080 --namespace shared start \
             --agent ci --native-session-id docker-smoke --project demo --title 'Container smoke' >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:18080/v1/executions \
             -H "Authorization: Bearer $HARNESS_TOKEN" -H 'Idempotency-Key: ci-execution' \

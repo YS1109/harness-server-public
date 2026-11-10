@@ -18,7 +18,7 @@ harness --namespace shared get --path memory/templates/release-doc-template.md
 harness --namespace shared put --path memory/templates/release-doc-template.md --file /path/to/template.md --expected-sha256 '<当前SHA>'
 ```
 
-后台知识空间的文档类型可筛选“模板”，预览仍为只读原文。
+v0.5后台“知识文档”可跨空间筛选模板，保留真实来源；预览后可编辑原文，经完整差异预览和SHA校验保存。模板仍是无状态原文，不支持归档。预览中的“检查生成文档结构”可按需检查生成文档的章节、表头和checklist，检查不保存文档，也不证明内容正确。新增模板仍使用客户端put；详见[模板结构检查](TEMPLATE-CHECK.md)和[知识文档管理](KNOWLEDGE-MANAGEMENT.md)。
 
 ## 安全补迁三份旧模板
 

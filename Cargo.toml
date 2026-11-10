@@ -1,13 +1,13 @@
 [package]
 name = "harness-server"
-version = "0.4.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 default-run = "harness-server"
 
 [features]
 default = ["service"]
-service = ["dep:axum", "dep:reqwest", "dep:subtle", "dep:tokio"]
+service = ["dep:argon2", "dep:axum", "dep:rand_core", "dep:reqwest", "dep:rpassword", "dep:subtle", "dep:tokio", "dep:tower"]
 
 [[bin]]
 name = "harness-server"
@@ -20,13 +20,16 @@ path = "src/bin/harness.rs"
 required-features = ["service"]
 
 [dependencies]
+argon2 = { version = "0.5.3", features = ["std"], optional = true }
 axum = { version = "0.8", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 flate2 = "1"
 regex = "1"
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+rpassword = { version = "7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -35,6 +38,7 @@ subtle = { version = "2", optional = true }
 tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 

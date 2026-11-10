@@ -335,7 +335,7 @@ fn current_hash(docs: &Documents, p: &str, expected: &str) -> Result<()> {
     }
     Ok(())
 }
-fn audit(docs: &mut Documents, action: &str, target: &str) {
+pub(crate) fn audit(docs: &mut Documents, action: &str, target: &str) {
     let now = chrono::Utc::now();
     let p = path("audit", &now.format("%Y-%m").to_string());
     let event =

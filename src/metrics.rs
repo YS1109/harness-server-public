@@ -20,6 +20,29 @@ const MAX_DAY_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    Task,
+    Maintenance,
+    Diagnostic,
+    #[serde(other)]
+    Unlabelled,
+}
+impl Purpose {
+    pub fn parse(value: &str) -> crate::error::Result<Self> {
+        match value {
+            "task" => Ok(Self::Task),
+            "maintenance" => Ok(Self::Maintenance),
+            "diagnostic" => Ok(Self::Diagnostic),
+            "unlabelled" => Ok(Self::Unlabelled),
+            _ => Err(crate::error::invalid(
+                "purpose必须为task、maintenance、diagnostic或unlabelled",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RouteResult {
     /// A selected topic, including an explicit selection.
     Auto,
@@ -44,6 +67,8 @@ impl RouteResult {
 
 #[derive(Serialize, Deserialize)]
 pub struct Event {
+    #[serde(default)]
+    pub purpose: Option<Purpose>,
     #[serde(default)]
     pub event_id: Option<String>,
     #[serde(default)]
@@ -92,6 +117,7 @@ pub struct Summary {
     pub route_results: BTreeMap<RouteResult, u64>,
     pub service_versions: BTreeMap<String, u64>,
     pub protocols: BTreeMap<String, u64>,
+    pub purposes: BTreeMap<Purpose, u64>,
     pub grouped_calls: u64,
     pub execution_groups: usize,
     pub lock_wait_ms_p50: Option<f64>,
@@ -116,6 +142,10 @@ pub struct Summary {
 }
 impl Summary {
     fn add(&mut self, e: &Event) {
+        *self
+            .purposes
+            .entry(e.purpose.unwrap_or(Purpose::Unlabelled))
+            .or_default() += 1;
         if let Some(group) = &e.execution_group_id {
             self.grouped_calls += 1;
             self.groups.insert(group.clone());
@@ -261,28 +291,39 @@ impl Ledger {
         project: Option<&str>,
         now: DateTime<Utc>,
     ) -> Value {
-        let cache_key =
-            serde_json::to_string(&(days, namespace, project)).expect("serializable cache key");
+        self.report_filtered(days, namespace, project, None, now)
+    }
+    pub fn report_filtered(
+        &self,
+        days: u32,
+        namespace: Option<&str>,
+        project: Option<&str>,
+        purpose: Option<Purpose>,
+        now: DateTime<Utc>,
+    ) -> Value {
+        let cache_key = serde_json::to_string(&(days, namespace, project, purpose))
+            .expect("serializable cache key");
         let generation = self.generation.load(Ordering::Acquire);
-        if let Ok(cache) = self.cache.lock() {
-            if let Some((time, _, r)) = cache.get(&cache_key).filter(|(t, g, r)| {
+        if let Ok(cache) = self.cache.lock()
+            && let Some((time, _, r)) = cache.get(&cache_key).filter(|(t, g, r)| {
                 let sample = r["sample_at"]
                     .as_str()
                     .and_then(|s| s.parse::<DateTime<Utc>>().ok());
                 *g == generation
                     && t.elapsed().as_secs() < 30
                     && sample.is_some_and(|s| now >= s && now - s < Duration::seconds(30))
-            }) {
-                let mut result = r.clone();
-                result["cache_hit"] = json!(true);
-                result["cache_age_seconds"] = json!(time.elapsed().as_secs());
-                return result;
-            }
+            })
+        {
+            let mut result = r.clone();
+            result["cache_hit"] = json!(true);
+            result["cache_age_seconds"] = json!(time.elapsed().as_secs());
+            return result;
         }
         let cutoff = now - Duration::days(i64::from(days));
         let mut all = Summary::default();
         let mut groups = BTreeMap::<String, Summary>::new();
         let mut commands = BTreeMap::<String, Summary>::new();
+        let mut purposes = BTreeMap::<Purpose, Summary>::new();
         let mut unreadable = 0u64;
         let mut malformed = 0u64;
         let mut first: Option<DateTime<Utc>> = None;
@@ -319,6 +360,7 @@ impl Ledger {
                     || event.timestamp > now
                     || namespace.is_some_and(|n| n != event.namespace)
                     || project.is_some_and(|p| event.project.as_deref() != Some(p))
+                    || purpose.is_some_and(|p| event.purpose.unwrap_or(Purpose::Unlabelled) != p)
                 {
                     continue;
                 }
@@ -335,11 +377,18 @@ impl Ledger {
                     .entry(event.command.clone())
                     .or_default()
                     .add(&event);
+                purposes
+                    .entry(event.purpose.unwrap_or(Purpose::Unlabelled))
+                    .or_default()
+                    .add(&event);
                 all.add(&event);
             }
         }
         all.finish();
         for s in commands.values_mut() {
+            s.finish();
+        }
+        for s in purposes.values_mut() {
             s.finish();
         }
         let groups: Vec<_> = groups
@@ -349,7 +398,7 @@ impl Ledger {
                 json!({"id":id,"metrics":s})
             })
             .collect();
-        let result = json!({"sample_at":now,"cache_hit":false,"cache_age_seconds":0,"command_metrics":commands,"metrics":all,"namespaces":groups,"window_days":days,"observed_since":first,"window_start":cutoff,"coverage_scope":"全局采集健康；无法归属空间的损坏记录与进程丢弃不按空间拆分。","coverage":{"malformed_events":malformed,"unreadable_files":unreadable,"dropped_events_this_process":self.dropped.load(Ordering::Relaxed)},"metrics_scope":"仅成功采集且进入业务处理器的调用；服务业务处理耗时含锁等待、逻辑与提交，不含鉴权/解析、执行队列等待、采集追加、模型思考、客户端启动及网络往返；鉴权/解析失败和health/stats/daily不采集。历史不会从旧日志补算。","net_benefit":"尚未测量"});
+        let result = json!({"sample_at":now,"cache_hit":false,"cache_age_seconds":0,"command_metrics":commands,"purpose_metrics":purposes,"purpose_filter":purpose,"purpose_scope":"用途由调用方显式标注；未标注和历史缺失保持unlabelled，不推断任务归属。","metrics":all,"namespaces":groups,"window_days":days,"observed_since":first,"window_start":cutoff,"coverage_scope":"全局采集健康；无法归属空间的损坏记录与进程丢弃不按空间拆分。","coverage":{"malformed_events":malformed,"unreadable_files":unreadable,"dropped_events_this_process":self.dropped.load(Ordering::Relaxed)},"metrics_scope":"仅成功采集且进入业务处理器的调用；服务业务处理耗时含锁等待、逻辑与提交，不含鉴权/解析、执行队列等待、采集追加、模型思考、客户端启动及网络往返；鉴权/解析失败和health/stats/daily不采集。历史不会从旧日志补算。管理文档保存另计maintenance；诊断预览与统计查询不采集。","net_benefit":"尚未测量"});
         if let Ok(mut cache) = self.cache.lock() {
             if cache.len() >= 32 {
                 cache.clear();
@@ -378,10 +427,10 @@ impl Ledger {
                 continue;
             }
             let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(stem) = name.strip_suffix(".jsonl") {
-                if chrono::NaiveDate::parse_from_str(stem, "%Y-%m-%d").is_ok_and(|d| d < cutoff) {
-                    expired.push(e.path());
-                }
+            if let Some(stem) = name.strip_suffix(".jsonl")
+                && chrono::NaiveDate::parse_from_str(stem, "%Y-%m-%d").is_ok_and(|d| d < cutoff)
+            {
+                expired.push(e.path());
             }
         }
         let mut deleted = 0;
@@ -402,6 +451,7 @@ mod tests {
     use super::*;
     fn event(now: DateTime<Utc>, ms: f64, ns: &str) -> Event {
         Event {
+            purpose: None,
             event_id: Some(uuid::Uuid::new_v4().to_string()),
             service_version: Some(env!("CARGO_PKG_VERSION").into()),
             protocol: Some("v1".into()),

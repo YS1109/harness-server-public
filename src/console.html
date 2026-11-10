@@ -12,19 +12,36 @@
 <body>
   <a class="skip-link" href="#main">跳到主内容</a>
   <header class="topbar">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">H</span><span>Harness <small>管理控制台</small></span></div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">H</span><span class="brand-label">Harness <small>管理控制台</small><span id="active-tenant" class="tenant-context" hidden></span></span></div>
     <div class="top-actions"><span id="connection" class="connection">未连接</span><button id="refresh" type="button" hidden>刷新</button><button id="logout" type="button" hidden>退出</button></div>
   </header>
 
   <section id="login-view" class="login-view" aria-labelledby="login-title">
-    <form id="login-form" class="login-card" autocomplete="off">
+    <form id="login-form" class="login-card">
       <span class="eyebrow">HARNESS CONSOLE</span>
       <h1 id="login-title">工作有迹可循</h1>
       <p class="muted">查看服务运行与任务进展，管理知识空间和 Agent 授权。</p>
-      <label for="admin-token">管理员令牌</label>
-      <input id="admin-token" name="admin-token" type="password" required autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="输入管理员 Bearer token">
-      <button id="login-submit" class="primary" type="submit">连接控制台</button>
-      <p class="hint">令牌仅保留在当前页面内存中，刷新或退出后需重新输入。</p>
+      <label for="admin-tenant">租户 ID <span class="optional">可选</span></label>
+      <input id="admin-tenant" name="tenant" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9\-]{0,127}" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="独立服务可留空">
+      <div id="password-fields">
+        <label for="admin-username">用户名</label>
+        <input id="admin-username" name="username" type="text" required maxlength="128" autocomplete="username" spellcheck="false" autocapitalize="none">
+        <label for="admin-password">密码</label>
+        <input id="admin-password" name="password" type="password" required maxlength="1024" autocomplete="current-password">
+      </div>
+      <label class="check-label" for="remember-login"><input id="remember-login" type="checkbox" name="remember">保持登录 30 天</label>
+      <p class="hint login-hint">未勾选时，会话最长 12 小时。请只在自己的设备上保持登录。</p>
+      <details id="token-options" class="login-advanced">
+        <summary>高级：独立管理员令牌</summary>
+        <label class="check-label" for="token-mode"><input id="token-mode" type="checkbox">使用管理员令牌登录</label>
+        <div id="token-fields" hidden>
+          <label for="admin-token">管理员令牌</label>
+          <input id="admin-token" name="admin-token" type="password" disabled autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="输入管理员 Bearer token">
+          <p class="hint">验证后换成安全会话，浏览器不会保存原始令牌。</p>
+        </div>
+      </details>
+      <button id="login-submit" class="primary" type="submit">登录控制台</button>
+      <p id="login-state" class="hint" role="status" aria-live="polite"></p>
       <p id="login-error" class="error-text" role="alert"></p>
     </form>
   </section>
@@ -33,6 +50,8 @@
     <aside class="sidebar" aria-label="工作台导航">
       <nav class="workspace-nav" aria-label="工作台视图">
         <button id="nav-runtime" class="global-nav" type="button">运行概览</button>
+        <button id="nav-documents" class="global-nav" type="button">知识文档</button>
+        <button id="nav-diagnosis" class="global-nav" type="button">检索诊断</button>
         <button id="nav-handoffs" class="global-nav" type="button">最近交接</button>
         <button id="nav-executions" class="global-nav" type="button">执行任务</button>
       </nav>
@@ -54,12 +73,38 @@
         <form id="runtime-filters" class="filters">
           <div><label for="runtime-namespace">统计空间</label><select id="runtime-namespace"><option value="">全部空间（全局）</option></select></div>
           <div><label for="runtime-days">统计窗口</label><select id="runtime-days"><option value="7">最近 7 天</option><option value="30" selected>最近 30 天</option><option value="90">最近 90 天</option></select></div>
+          <div><label for="runtime-purpose">用途</label><select id="runtime-purpose"><option value="">全部用途</option><option value="task">日常任务</option><option value="maintenance">维护</option><option value="diagnostic">诊断</option><option value="unlabelled">未标注（含历史）</option></select></div>
           <button type="submit">查询</button>
         </form>
         <p id="runtime-state" class="hint" role="status" aria-live="polite"></p>
         <div id="runtime-content" aria-busy="false"></div>
         <section class="runtime-section" aria-labelledby="storage-title"><div class="section-heading storage-heading"><div><h2 id="storage-title">磁盘容量（全局）</h2><p class="muted">按需扫描，服务缓存 30 秒；不随空间或统计窗口变化。</p></div><button id="read-storage" type="button">读取磁盘容量</button></div><p id="storage-state" class="hint" role="status" aria-live="polite"></p><div id="storage-content" aria-busy="false"></div></section>
         <section class="runtime-section" aria-labelledby="routing-title"><h2 id="routing-title">最近路由评测</h2><p id="routing-state" class="hint" role="status" aria-live="polite"></p><div id="routing-content" aria-busy="false"></div></section>
+      </section>
+      <section id="knowledge-view" aria-labelledby="knowledge-title" hidden>
+        <div class="page-heading"><div><span class="eyebrow">KNOWLEDGE</span><h1 id="knowledge-title">知识文档</h1><p class="muted">按内容查找记忆与模板。每份文档显示来源空间，修改始终保存到原空间。</p></div></div>
+        <form id="knowledge-filters" class="filters">
+          <div><label for="knowledge-namespace">空间</label><select id="knowledge-namespace"><option value="">全部空间</option></select></div>
+          <div><label for="knowledge-kind">类型</label><select id="knowledge-kind"><option value="">全部知识与模板</option><option value="project">项目</option><option value="project_topic">专题</option><option value="process">流程</option><option value="template">模板</option></select></div>
+          <div class="search-field"><label for="knowledge-query">搜索</label><input id="knowledge-query" type="search" maxlength="200" placeholder="标题或路径"></div>
+          <div><label for="knowledge-project">项目 ID</label><input id="knowledge-project" type="text" maxlength="128" placeholder="全部项目；模板不属于项目"></div>
+          <div><label for="knowledge-status">状态</label><select id="knowledge-status"><option value="">全部状态</option><option value="ACTIVE">使用中</option><option value="ARCHIVED">已归档</option></select></div>
+          <div><label for="knowledge-sort">排序</label><select id="knowledge-sort"><option value="path">路径顺序</option><option value="updated_desc">最近更新</option></select></div>
+          <button type="submit">查询</button>
+        </form>
+        <p id="knowledge-state" class="hint" role="status" aria-live="polite"></p>
+        <div class="table-wrap"><table><caption class="sr-only">知识文档及来源空间</caption><thead><tr><th scope="col">文档</th><th scope="col">来源空间</th><th scope="col">类型 / 状态</th><th scope="col">更新时间</th></tr></thead><tbody id="knowledge-body"></tbody></table></div>
+        <div class="pagination"><span id="knowledge-page"></span><div class="button-row"><button id="knowledge-previous" type="button" disabled>上一页</button><button id="knowledge-next" type="button" disabled>下一页</button></div></div>
+      </section>
+      <section id="diagnosis-view" aria-labelledby="diagnosis-title" hidden>
+        <div class="page-heading"><div><span class="eyebrow">ROUTING</span><h1 id="diagnosis-title">检索诊断</h1><p class="muted">显式查询排序依据，不创建交接、不保存问题、不自动运行评测。分数不代表正确率。</p></div></div>
+        <form id="diagnosis-form" class="diagnosis-form">
+          <label for="diagnosis-spaces">读取空间（可多选，最多 8 个）</label><select id="diagnosis-spaces" multiple size="4"></select>
+          <label for="diagnosis-project">项目 ID</label><input id="diagnosis-project" required maxlength="128" pattern="[a-z0-9][a-z0-9\-]{0,127}" placeholder="demo">
+          <label for="diagnosis-scenario">要检索的问题</label><textarea id="diagnosis-scenario" required maxlength="2000" rows="4"></textarea>
+          <button id="diagnosis-submit" type="submit">查看检索依据</button>
+        </form>
+        <p id="diagnosis-state" class="hint" role="status" aria-live="polite"></p><div id="diagnosis-result"></div>
       </section>
       <section id="browse-view" aria-labelledby="browse-title" hidden>
         <div class="page-heading"><div><span id="browse-eyebrow" class="eyebrow">HANDOFFS</span><h1 id="browse-title">最近交接</h1><p id="browse-description" class="muted"></p></div></div>
@@ -108,6 +153,23 @@
 
   <dialog id="agent-dialog" class="wide-dialog" aria-labelledby="agent-dialog-title"><form id="agent-form"><div class="dialog-heading"><div><span class="eyebrow">AGENT ACCESS</span><h2 id="agent-dialog-title">编辑 Agent</h2></div><button class="icon-button" type="button" data-close="agent-dialog" aria-label="关闭">×</button></div><p id="agent-identity" class="muted"></p><label for="agent-name">显示名称</label><input id="agent-name" type="text" required maxlength="80" autocomplete="off"><fieldset><legend>空间授权</legend><p class="hint">可授权多个空间；默认读取必须属于读取授权，默认写入必须属于写入授权。</p><div class="table-wrap"><table><caption class="sr-only">Agent 空间授权</caption><thead><tr><th scope="col">空间</th><th scope="col">读取</th><th scope="col">写入</th><th scope="col">默认读取</th></tr></thead><tbody id="agent-grants"></tbody></table></div></fieldset><label for="agent-default-write">默认写入空间</label><select id="agent-default-write"></select><p id="agent-unsaved" class="unsaved" hidden>有未保存的修改</p><p id="agent-form-error" class="error-text" role="alert"></p><div class="dialog-actions"><button type="button" data-close="agent-dialog">取消</button><button id="agent-save" type="submit" class="primary">保存权限</button></div></form></dialog>
 
-  <dialog id="preview-dialog" class="preview-dialog" aria-labelledby="preview-title"><div class="dialog-heading"><h2 id="preview-title">文档预览</h2><button class="icon-button" type="button" data-close="preview-dialog" aria-label="关闭预览">×</button></div><p id="preview-path" class="mono muted"></p><p id="preview-sha" class="mono hint"></p><p id="preview-note" class="hint">只读 Markdown 原文</p><p id="preview-state" class="hint" role="status" aria-live="polite"></p><div id="execution-detail" hidden></div><details id="preview-raw"><summary>原始 JSON（只读）</summary><pre id="preview-content" tabindex="0"></pre></details></dialog>
+  <dialog id="preview-dialog" class="preview-dialog" aria-labelledby="preview-title"><div class="dialog-heading"><h2 id="preview-title">文档预览</h2><button class="icon-button" type="button" data-close="preview-dialog" aria-label="关闭预览">×</button></div><p id="preview-path" class="mono muted"></p><p id="preview-sha" class="mono hint"></p><p id="preview-note" class="hint">只读 Markdown 原文</p><p id="preview-state" class="hint" role="status" aria-live="polite"></p><div id="preview-actions" class="button-row"></div><div id="execution-detail" hidden></div><details id="preview-raw"><summary>原始 JSON（只读）</summary><pre id="preview-content" tabindex="0"></pre></details></dialog>
+  <dialog id="document-dialog" class="document-dialog" aria-labelledby="document-title">
+    <div class="dialog-heading"><h2 id="document-title">编辑文档</h2><button class="icon-button" type="button" data-close="document-dialog" aria-label="关闭编辑">×</button></div>
+    <p id="document-source" class="mono muted"></p><p id="document-budget" class="hint"></p>
+    <p class="hint">保留元数据中的身份和核验声明；项目专题索引由服务重建。保存前先预览完整校验及差异。</p>
+    <label for="document-content">Markdown 原文</label><textarea id="document-content" rows="18" spellcheck="false"></textarea>
+    <p id="document-unsaved" class="unsaved" hidden>有未保存的修改</p><p id="document-error" class="error-text" role="alert"></p>
+    <div id="document-conflict" class="info-box" hidden><strong>当前版本已变化，草稿已保留</strong><p>读取最新版本，与下方原文比较后手动合并。确认后再更新保存基线。</p><button id="document-read-latest" type="button">读取最新版本</button><button id="document-use-latest" type="button" disabled>已合并，使用最新 SHA 重新预览</button><pre id="document-latest"></pre></div>
+    <div id="document-diff" class="document-diff"></div>
+    <div class="dialog-actions"><button id="document-preview" type="button">校验并预览差异</button><button id="document-save" type="button" class="primary" disabled>确认差异并保存</button></div>
+  </dialog>
+  <dialog id="template-dialog" class="document-dialog" aria-labelledby="template-title">
+    <div class="dialog-heading"><h2 id="template-title">模板结构检查</h2><button class="icon-button" type="button" data-close="template-dialog" aria-label="关闭检查">×</button></div>
+    <p id="template-source" class="mono muted"></p><p class="hint">粘贴生成的文档，按需检查章节、表头和 checklist；只检查结构，不证明内容正确，也不保存文档。</p>
+    <label for="template-document">生成文档</label><textarea id="template-document" rows="16" spellcheck="false"></textarea>
+    <p id="template-state" class="hint" role="status" aria-live="polite"></p><pre id="template-result"></pre>
+    <div class="dialog-actions"><button id="template-check" type="button" class="primary">检查结构</button></div>
+  </dialog>
 </body>
 </html>
