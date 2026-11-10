@@ -1,8 +1,8 @@
 use crate::{
     document::{Documents, path_kind, sha, validate_all},
     error::{Result, conflict, invalid},
+    file_lock::FileLock,
 };
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -34,7 +34,7 @@ pub struct Store {
     root: PathBuf,
     pub state: State,
     pub revision: Option<String>,
-    _lock: File,
+    _lock: FileLock,
 }
 
 fn plain(path: &Path) -> Result<()> {
@@ -77,8 +77,8 @@ impl Store {
             .create(true)
             .truncate(false)
             .open(lock)?;
-        f.try_lock_exclusive()
-            .map_err(|_| conflict("数据目录已被另一个服务或导入进程占用"))?;
+        let lock =
+            FileLock::acquire(f).map_err(|_| conflict("数据目录已被另一个服务或导入进程占用"))?;
         plain(&root.join("revisions"))?;
         fs::create_dir_all(root.join("revisions"))?;
         let head = root.join("HEAD");
@@ -120,7 +120,7 @@ impl Store {
             root,
             state,
             revision,
-            _lock: f,
+            _lock: lock,
         })
     }
     pub fn root(&self) -> &Path {

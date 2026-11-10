@@ -946,7 +946,8 @@ fn all_store_locks_release_on_failure_and_mode_marker_prevents_legacy_open() {
     let root = root(&dir);
     let held = Store::open(root.join("tenants/beta")).unwrap();
     assert!(tenancy::router_with_tenants(&root, tenants()).is_err());
-    assert!(Store::open(root.join("tenants/alpha")).is_ok());
+    Store::open(root.join("tenants/alpha"))
+        .expect("failed tenant startup must release previously acquired Store locks");
     assert!(!root.join("tenants/alpha/HEAD").exists());
     drop(held);
     let gateway = tenancy::router_with_tenants(&root, tenants()).unwrap();

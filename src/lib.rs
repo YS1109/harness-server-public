@@ -13,6 +13,7 @@ pub mod document_management;
 pub mod engine;
 pub mod error;
 pub mod execution;
+mod file_lock;
 #[cfg(feature = "service")]
 pub mod metrics;
 pub mod namespace;

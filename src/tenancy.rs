@@ -5,6 +5,7 @@ use crate::{
     auth::{self, Principal},
     document::{self, sha},
     error::{Result, conflict, invalid},
+    file_lock::FileLock,
     store::Store,
 };
 use axum::{
@@ -14,7 +15,6 @@ use axum::{
     http::{HeaderValue, Method, Request, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
-use fs2::FileExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -67,7 +67,7 @@ pub struct Tenant {
 
 struct Gateway {
     routers: BTreeMap<String, Router>,
-    _lock: File,
+    _lock: FileLock,
 }
 
 fn environment(name: &str) -> Result<String> {
@@ -225,7 +225,7 @@ pub fn ensure_single_tenant(data_root: &Path) -> Result<()> {
     }
 }
 
-fn open_lock(root: &Path) -> Result<File> {
+fn open_lock(root: &Path) -> Result<FileLock> {
     let path = root.join(".tenancy.lock");
     reject_symlinks(&path)?;
     let mut options = OpenOptions::new();
@@ -236,9 +236,7 @@ fn open_lock(root: &Path) -> Result<File> {
         options.mode(0o600);
     }
     let file = options.open(path)?;
-    file.try_lock_exclusive()
-        .map_err(|_| conflict("Tenant data root is already in use"))?;
-    Ok(file)
+    FileLock::acquire(file).map_err(|_| conflict("Tenant data root is already in use"))
 }
 
 fn mark_mode(root: &Path) -> Result<()> {
