@@ -1,6 +1,6 @@
 # Harness 部署与使用
 
-适用于Rust原生`harness-server` / `harness`；当前源码0.6.0。Linux服务器使用Docker Engine + Compose v2；macOS本地使用Docker Desktop + Compose v2。直接编译需要Rust1.88或更高版本及完整源码中的`Cargo.lock`。以下Linux路径为示例，须替换为实际路径。
+适用于Rust原生`harness-server` / `harness`；当前源码0.6.1。Linux服务器使用Docker Engine + Compose v2；macOS本地使用Docker Desktop + Compose v2。直接编译需要Rust1.88或更高版本及完整源码中的`Cargo.lock`。以下Linux路径为示例，须替换为实际路径。
 
 默认本地域名为 `localhost`，客户端未配置地址时连接 `http://localhost:8080`。AI 引导配置见 [AI-SETUP.md](AI-SETUP.md)。下面是源码构建入口；首次成功发布 GHCR 镜像后，也可使用 [compose.image.yaml](../compose.image.yaml) 直接拉取部署，步骤见 [IMAGES.md](IMAGES.md)。
 

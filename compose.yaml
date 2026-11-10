@@ -1,6 +1,6 @@
 services:
   harness-server:
-    image: harness-server:0.6.0
+    image: harness-server:0.6.1
     build:
       context: .
       dockerfile: Dockerfile
